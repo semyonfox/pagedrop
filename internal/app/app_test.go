@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -235,5 +236,17 @@ func TestUploadRequiresAuthentication(t *testing.T) {
 	s.httpServer.Handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestConfigDefaultExpiryIsOneDay(t *testing.T) {
+	t.Setenv("PAGEDROP_TOKEN", strings.Repeat("a", 32))
+	t.Setenv("PAGEDROP_DEFAULT_EXPIRY", "")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultExpiry != 24*time.Hour {
+		t.Fatalf("default expiry = %s", cfg.DefaultExpiry)
 	}
 }

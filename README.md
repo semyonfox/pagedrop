@@ -87,7 +87,8 @@ relative asset URLs such as `assets/chart.js`; root-relative URLs such as
 `/assets/chart.js` refer to the PageDrop host root and will not work beneath a
 page URL.
 
-Supported expiration values include `1h`, `7d`, `30d`, and `never`.
+Pages expire after one day by default. Supported overrides include `1h`, `7d`,
+`30d`, and `never`.
 
 ## AI-agent instruction
 
@@ -190,7 +191,7 @@ data.
 | `PAGEDROP_LISTEN_ADDR` | `:8080` |
 | `PAGEDROP_DATA_DIR` | `./data` |
 | `PAGEDROP_PUBLIC_BASE_URL` | `http://localhost:8080` |
-| `PAGEDROP_DEFAULT_EXPIRY` | `30d` |
+| `PAGEDROP_DEFAULT_EXPIRY` | `1d` |
 | `PAGEDROP_MAX_EXPIRY` | `365d` |
 | `PAGEDROP_MAX_UPLOAD_BYTES` | `26214400` (25 MiB) |
 | `PAGEDROP_MAX_EXTRACTED_BYTES` | `104857600` (100 MiB) |
