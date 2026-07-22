@@ -1,0 +1,34 @@
+services:
+  pagedrop:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8080"
+    environment:
+      PAGEDROP_TOKEN: ${PAGEDROP_TOKEN:?set PAGEDROP_TOKEN in .env}
+      PAGEDROP_DATA_DIR: /data
+      PAGEDROP_PUBLIC_BASE_URL: ${PAGEDROP_PUBLIC_BASE_URL:-http://localhost:8080}
+      PAGEDROP_DEFAULT_EXPIRY: ${PAGEDROP_DEFAULT_EXPIRY:-30d}
+      PAGEDROP_MAX_EXPIRY: ${PAGEDROP_MAX_EXPIRY:-365d}
+      PAGEDROP_MAX_UPLOAD_BYTES: ${PAGEDROP_MAX_UPLOAD_BYTES:-26214400}
+      PAGEDROP_MAX_EXTRACTED_BYTES: ${PAGEDROP_MAX_EXTRACTED_BYTES:-104857600}
+      PAGEDROP_MAX_FILES: ${PAGEDROP_MAX_FILES:-1000}
+    volumes:
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      pagedrop:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

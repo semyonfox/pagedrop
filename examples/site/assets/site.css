@@ -1,0 +1,3 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+main { max-width: 42rem; margin: 10vh auto; padding: 1.5rem; }
+h1 { color: #8b5cf6; }

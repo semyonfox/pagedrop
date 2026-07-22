@@ -1,0 +1,350 @@
+package app
+
+import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type clientConfig struct{ Server, Token string }
+
+func ConfigureCLI(args []string) error {
+	flags := flag.NewFlagSet("configure", flag.ContinueOnError)
+	server := flags.String("server", "", "PageDrop server URL")
+	token := flags.String("token", "", "upload token")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *server == "" || *token == "" {
+		return errors.New("usage: pagedrop configure --server URL --token TOKEN")
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return err
+	}
+	dir = filepath.Join(dir, "pagedrop")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	content := fmt.Sprintf("server = %s\ntoken = %s\n", strconv.Quote(strings.TrimRight(*server, "/")), strconv.Quote(*token))
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return err
+	}
+	fmt.Println("Saved configuration to", path)
+	return nil
+}
+
+func loadClientConfig() clientConfig {
+	c := clientConfig{Server: env("PAGEDROP_SERVER", "http://localhost:8788"), Token: os.Getenv("PAGEDROP_TOKEN")}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return c
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "pagedrop", "config.toml"))
+	if err != nil {
+		return c
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		value, err := strconv.Unquote(strings.TrimSpace(parts[1]))
+		if err != nil {
+			continue
+		}
+		switch strings.TrimSpace(parts[0]) {
+		case "server":
+			if os.Getenv("PAGEDROP_SERVER") == "" {
+				c.Server = value
+			}
+		case "token":
+			if os.Getenv("PAGEDROP_TOKEN") == "" {
+				c.Token = value
+			}
+		}
+	}
+	return c
+}
+
+func UploadCLI(args []string) error { return uploadCommand(http.MethodPost, "", args) }
+func ReplaceCLI(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: pagedrop replace PAGE_ID [options] FILE_OR_DIRECTORY")
+	}
+	id := args[0]
+	return uploadCommand(http.MethodPut, id, args[1:])
+}
+
+func uploadCommand(method, id string, args []string) error {
+	cfg := loadClientConfig()
+	flags := flag.NewFlagSet(strings.ToLower(method), flag.ContinueOnError)
+	server := flags.String("server", cfg.Server, "PageDrop server URL")
+	token := flags.String("token", cfg.Token, "upload token")
+	quiet := flags.Bool("quiet", false, "print only the URL")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	expires := flags.String("expires", "", "expiry such as 7d or never")
+	title := flags.String("title", "", "page title")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 || *token == "" {
+		return errors.New("provide one HTML file, ZIP archive, or directory and a configured token")
+	}
+	path, cleanup, err := uploadPath(flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(part, file); err != nil {
+		return err
+	}
+	if *expires != "" {
+		_ = writer.WriteField("expires_in", *expires)
+	}
+	if *title != "" {
+		_ = writer.WriteField("title", *title)
+	}
+	if err = writer.Close(); err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(*server, "/") + "/api/v1/pages"
+	if method == http.MethodPut {
+		endpoint += "/" + id + "/content"
+	}
+	req, err := http.NewRequest(method, endpoint, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+*token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(resp.Body)
+	expected := http.StatusCreated
+	if method == http.MethodPut {
+		expected = http.StatusOK
+	}
+	if resp.StatusCode != expected {
+		return fmt.Errorf("request failed (%s): %s", resp.Status, strings.TrimSpace(string(responseBody)))
+	}
+	var p page
+	if err = json.Unmarshal(responseBody, &p); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		fmt.Println(strings.TrimSpace(string(responseBody)))
+	} else if *quiet {
+		fmt.Println(p.URL)
+	} else {
+		fmt.Printf("Published: %s\nID: %s\nExpires: %s\n", p.URL, p.ID, expiryDisplay(p.ExpiresAt))
+	}
+	return nil
+}
+
+func uploadPath(path string) (string, func(), error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", func() {}, err
+	}
+	if !info.IsDir() {
+		return path, func() {}, nil
+	}
+	if _, err := os.Stat(filepath.Join(path, "index.html")); err != nil {
+		return "", func() {}, errors.New("directory must contain index.html at its root")
+	}
+	tmp, err := os.CreateTemp("", "pagedrop-*.zip")
+	if err != nil {
+		return "", func() {}, err
+	}
+	zw := zip.NewWriter(tmp)
+	err = filepath.WalkDir(path, func(item string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic links are not supported: %s", item)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(path, item)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.Method = zip.Deflate
+		out, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		in, err := os.Open(item)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := in.Close()
+		return errors.Join(copyErr, closeErr)
+	})
+	closeErr := zw.Close()
+	fileCloseErr := tmp.Close()
+	if err = errors.Join(err, closeErr, fileCloseErr); err != nil {
+		os.Remove(tmp.Name())
+		return "", func() {}, err
+	}
+	return tmp.Name(), func() { _ = os.Remove(tmp.Name()) }, nil
+}
+
+func ListCLI(args []string) error { return metadataCommand("list", "", args) }
+func InfoCLI(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: pagedrop info PAGE_ID")
+	}
+	return metadataCommand("info", args[0], args[1:])
+}
+
+func metadataCommand(kind, id string, args []string) error {
+	cfg := loadClientConfig()
+	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
+	server := flags.String("server", cfg.Server, "server URL")
+	token := flags.String("token", cfg.Token, "token")
+	jsonOutput := flags.Bool("json", false, "JSON output")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *token == "" {
+		return errors.New("PageDrop token is not configured")
+	}
+	endpoint := strings.TrimRight(*server, "/") + "/api/v1/pages"
+	if id != "" {
+		endpoint += "/" + id
+	}
+	body, err := clientRequest(http.MethodGet, endpoint, *token)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		fmt.Println(string(body))
+		return nil
+	}
+	if id != "" {
+		var p page
+		if err = json.Unmarshal(body, &p); err != nil {
+			return err
+		}
+		printPage(p)
+		return nil
+	}
+	var result struct {
+		Pages []page `json:"pages"`
+	}
+	if err = json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	for _, p := range result.Pages {
+		printPage(p)
+	}
+	return nil
+}
+
+func printPage(p page) {
+	title := p.Title
+	if title == "" {
+		title = "-"
+	}
+	fmt.Printf("%-22s  %-8s  %-10s  %-20s  %s\n", p.ID, p.Status, expiryDisplay(p.ExpiresAt), title, p.URL)
+}
+func expiryDisplay(value *string) string {
+	if value == nil {
+		return "never"
+	}
+	expires, err := time.Parse(time.RFC3339, *value)
+	if err != nil {
+		return *value
+	}
+	remaining := time.Until(expires)
+	if remaining <= 0 {
+		return "expired"
+	}
+	if remaining >= 24*time.Hour {
+		return fmt.Sprintf("%dd%dh", int(remaining/(24*time.Hour)), int((remaining%(24*time.Hour))/time.Hour))
+	}
+	if remaining >= time.Hour {
+		return fmt.Sprintf("%dh%dm", int(remaining/time.Hour), int((remaining%time.Hour)/time.Minute))
+	}
+	return fmt.Sprintf("%dm", max(1, int(remaining/time.Minute)))
+}
+
+func DeleteCLI(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: pagedrop delete PAGE_ID")
+	}
+	id := args[0]
+	cfg := loadClientConfig()
+	flags := flag.NewFlagSet("delete", flag.ContinueOnError)
+	server := flags.String("server", cfg.Server, "server URL")
+	token := flags.String("token", cfg.Token, "token")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *token == "" {
+		return errors.New("PageDrop token is not configured")
+	}
+	_, err := clientRequest(http.MethodDelete, strings.TrimRight(*server, "/")+"/api/v1/pages/"+id, *token)
+	if err == nil {
+		fmt.Println("Deleted:", id)
+	}
+	return err
+}
+
+func clientRequest(method, url, token string) ([]byte, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("request failed (%s): %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return body, nil
+}
