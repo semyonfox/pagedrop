@@ -47,7 +47,7 @@ func ConfigFromEnv() (Config, error) {
 		CleanupInterval: time.Minute,
 	}
 	var err error
-	if c.DefaultExpiry, err = parseExpiry(env("PAGEDROP_DEFAULT_EXPIRY", "30d")); err != nil {
+	if c.DefaultExpiry, err = parseExpiry(env("PAGEDROP_DEFAULT_EXPIRY", "1d")); err != nil {
 		return Config{}, fmt.Errorf("PAGEDROP_DEFAULT_EXPIRY: %w", err)
 	}
 	if c.MaxExpiry, err = parseExpiry(env("PAGEDROP_MAX_EXPIRY", "365d")); err != nil {
@@ -101,7 +101,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.MaxFiles = 1000
 	}
 	if cfg.DefaultExpiry == 0 {
-		cfg.DefaultExpiry = 30 * 24 * time.Hour
+		cfg.DefaultExpiry = 24 * time.Hour
 	}
 	if cfg.MaxExpiry == 0 {
 		cfg.MaxExpiry = 365 * 24 * time.Hour
