@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/net/html"
 )
 
 type preparedUpload struct {
@@ -22,7 +24,7 @@ type preparedUpload struct {
 }
 
 func (s *Server) createPage(w http.ResponseWriter, r *http.Request) {
-	upload, title, expiresAt, err := s.receiveUpload(w, r)
+	upload, title, expiresAt, ttl, err := s.receiveUpload(w, r, s.cfg.DefaultExpiry)
 	if err != nil {
 		writeUploadError(w, err)
 		return
@@ -49,7 +51,7 @@ func (s *Server) createPage(w http.ResponseWriter, r *http.Request) {
 	if expiresAt != nil {
 		expiry = expiresAt.UTC().Format(time.RFC3339)
 	}
-	_, err = s.db.Exec(`INSERT INTO pages(id,title,status,created_at,updated_at,expires_at,size_bytes,file_count,content_version) VALUES(?,?,'active',?,?,?,?,?,1)`, id, title, now, now, expiry, upload.size, upload.files)
+	_, err = s.db.Exec(`INSERT INTO pages(id,title,status,created_at,updated_at,expires_at,size_bytes,file_count,content_version,ttl_seconds) VALUES(?,?,'active',?,?,?,?,?,1,?)`, id, title, now, now, expiry, upload.size, upload.files, int64(ttl/time.Second))
 	if err != nil {
 		_ = os.RemoveAll(root)
 		writeError(w, 500, "INTERNAL", "Could not record page.")
@@ -70,7 +72,8 @@ func (s *Server) replacePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "INTERNAL", "Could not read page.")
 		return
 	}
-	upload, _, _, err := s.receiveUpload(w, r)
+	ttl := time.Duration(current.TTLSeconds) * time.Second
+	upload, title, _, requestedTTL, err := s.receiveUpload(w, r, ttl)
 	if err != nil {
 		writeUploadError(w, err)
 		return
@@ -83,7 +86,14 @@ func (s *Server) replacePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := s.db.Exec(`UPDATE pages SET updated_at=?,size_bytes=?,file_count=?,content_version=? WHERE id=? AND content_version=? AND status='active'`, now, upload.size, upload.files, version, id, current.ContentVersion)
+	if requestedTTL > 0 {
+		ttl = requestedTTL
+	}
+	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
+	if title == "" {
+		title = current.Title
+	}
+	result, err := s.db.Exec(`UPDATE pages SET title=?,updated_at=?,expires_at=?,size_bytes=?,file_count=?,content_version=?,ttl_seconds=? WHERE id=? AND content_version=? AND status='active'`, title, now, expiresAt, upload.size, upload.files, version, int64(ttl/time.Second), id, current.ContentVersion)
 	if err != nil {
 		_ = os.RemoveAll(final)
 		writeError(w, 500, "INTERNAL", "Could not record replacement.")
@@ -100,24 +110,24 @@ func (s *Server) replacePage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request) (preparedUpload, string, *time.Time, error) {
+func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request, defaultTTL time.Duration) (preparedUpload, string, *time.Time, time.Duration, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUpload+(2<<20))
 	if err := r.ParseMultipartForm(s.cfg.MaxUpload); err != nil {
-		return preparedUpload{}, "", nil, uploadError{413, "UPLOAD_TOO_LARGE", "Upload exceeds the configured limit."}
+		return preparedUpload{}, "", nil, 0, uploadError{413, "UPLOAD_TOO_LARGE", "Upload exceeds the configured limit."}
 	}
 	defer r.MultipartForm.RemoveAll()
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		return preparedUpload{}, "", nil, uploadError{400, "FILE_REQUIRED", "An HTML or ZIP file is required."}
+		return preparedUpload{}, "", nil, 0, uploadError{400, "FILE_REQUIRED", "An HTML or ZIP file is required."}
 	}
 	defer file.Close()
-	expiresAt, err := s.expiryFromForm(r.FormValue("expires_in"))
+	expiresAt, ttl, err := s.expiryFromForm(r.FormValue("expires_in"), defaultTTL)
 	if err != nil {
-		return preparedUpload{}, "", nil, uploadError{400, "INVALID_EXPIRY", err.Error()}
+		return preparedUpload{}, "", nil, 0, uploadError{400, "INVALID_EXPIRY", err.Error()}
 	}
 	tmp, err := os.MkdirTemp(filepath.Join(s.cfg.DataDir, "pages"), ".upload-")
 	if err != nil {
-		return preparedUpload{}, "", nil, err
+		return preparedUpload{}, "", nil, 0, err
 	}
 	upload := preparedUpload{dir: tmp}
 	ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -126,7 +136,7 @@ func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request) (prepared
 		size, err := copyLimited(filepath.Join(tmp, "index.html"), file, s.cfg.MaxUpload)
 		if err != nil {
 			os.RemoveAll(tmp)
-			return preparedUpload{}, "", nil, err
+			return preparedUpload{}, "", nil, 0, err
 		}
 		upload.size, upload.files = size, 1
 	case ".zip":
@@ -134,12 +144,12 @@ func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request) (prepared
 		size, err := copyLimited(archivePath, file, s.cfg.MaxUpload)
 		if err != nil {
 			os.RemoveAll(tmp)
-			return preparedUpload{}, "", nil, err
+			return preparedUpload{}, "", nil, 0, err
 		}
 		archive, err := zip.OpenReader(archivePath)
 		if err != nil {
 			os.RemoveAll(tmp)
-			return preparedUpload{}, "", nil, uploadError{400, "INVALID_ARCHIVE", "ZIP archive is invalid."}
+			return preparedUpload{}, "", nil, 0, uploadError{400, "INVALID_ARCHIVE", "ZIP archive is invalid."}
 		}
 		upload.size, upload.files, err = s.extractZIP(archive, tmp)
 		archive.Close()
@@ -147,17 +157,24 @@ func (s *Server) receiveUpload(w http.ResponseWriter, r *http.Request) (prepared
 		_ = size
 		if err != nil {
 			os.RemoveAll(tmp)
-			return preparedUpload{}, "", nil, err
+			return preparedUpload{}, "", nil, 0, err
 		}
 	default:
 		os.RemoveAll(tmp)
-		return preparedUpload{}, "", nil, uploadError{400, "UNSUPPORTED_FILE", "Upload a standalone HTML file or ZIP archive."}
+		return preparedUpload{}, "", nil, 0, uploadError{400, "UNSUPPORTED_FILE", "Upload a standalone HTML file or ZIP archive."}
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "index.html")); err != nil {
 		os.RemoveAll(tmp)
-		return preparedUpload{}, "", nil, uploadError{400, "INDEX_REQUIRED", "Archive must contain index.html at its root."}
+		return preparedUpload{}, "", nil, 0, uploadError{400, "INDEX_REQUIRED", "Archive must contain index.html at its root."}
 	}
-	return upload, strings.TrimSpace(r.FormValue("title")), expiresAt, nil
+	title := cleanTitle(r.FormValue("title"))
+	if title == "" {
+		title = extractHTMLTitle(filepath.Join(tmp, "index.html"))
+	}
+	if title == "" {
+		title = cleanTitle(strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename)))
+	}
+	return upload, title, expiresAt, ttl, nil
 }
 
 func copyLimited(path string, source io.Reader, limit int64) (int64, error) {
@@ -226,25 +243,65 @@ func (s *Server) extractZIP(archive *zip.ReadCloser, destination string) (int64,
 	return total, files, nil
 }
 
-func (s *Server) expiryFromForm(value string) (*time.Time, error) {
+func (s *Server) expiryFromForm(value string, defaultTTL time.Duration) (*time.Time, time.Duration, error) {
 	if value == "" {
-		value = formatExpiry(s.cfg.DefaultExpiry)
+		value = formatExpiry(defaultTTL)
 	}
 	if strings.EqualFold(value, "never") {
 		if s.cfg.MaxExpiry > 0 {
-			return nil, fmt.Errorf("expiry must not exceed %s", formatExpiry(s.cfg.MaxExpiry))
+			return nil, 0, fmt.Errorf("expiry must not exceed %s", formatExpiry(s.cfg.MaxExpiry))
 		}
-		return nil, nil
+		return nil, 0, nil
 	}
 	duration, err := parseExpiry(value)
 	if err != nil || duration <= 0 {
-		return nil, fmt.Errorf("use an expiry such as 1h, 1d, or 7d")
+		return nil, 0, fmt.Errorf("use an expiry such as 1h, 1d, or 7d")
 	}
 	if s.cfg.MaxExpiry > 0 && duration > s.cfg.MaxExpiry {
-		return nil, fmt.Errorf("expiry exceeds maximum of %s", formatExpiry(s.cfg.MaxExpiry))
+		return nil, 0, fmt.Errorf("expiry exceeds maximum of %s", formatExpiry(s.cfg.MaxExpiry))
 	}
 	t := time.Now().UTC().Add(duration)
-	return &t, nil
+	return &t, duration, nil
+}
+
+func cleanTitle(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > 120 {
+		value = string(runes[:120])
+	}
+	return value
+}
+
+func extractHTMLTitle(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	tokenizer := html.NewTokenizer(io.LimitReader(file, 128<<10))
+	inTitle := false
+	var title strings.Builder
+	for {
+		switch tokenizer.Next() {
+		case html.ErrorToken:
+			return cleanTitle(title.String())
+		case html.StartTagToken:
+			name, _ := tokenizer.TagName()
+			if strings.EqualFold(string(name), "title") {
+				inTitle = true
+			}
+		case html.EndTagToken:
+			name, _ := tokenizer.TagName()
+			if strings.EqualFold(string(name), "title") {
+				return cleanTitle(title.String())
+			}
+		case html.TextToken:
+			if inTitle {
+				title.Write(tokenizer.Text())
+			}
+		}
+	}
 }
 
 func parseExpiry(value string) (time.Duration, error) {

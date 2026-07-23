@@ -71,6 +71,19 @@ func (s *Server) limitUploads(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) limitUploadConcurrency(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.uploadSlots <- struct{}{}:
+			defer func() { <-s.uploadSlots }()
+			next(w, r)
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "UPLOAD_BUSY", "The server is processing other uploads; retry shortly.")
+		}
+	}
+}
+
 func (s *Server) clientIP(r *http.Request) string {
 	if s.cfg.TrustProxyHeaders {
 		if candidate := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); net.ParseIP(candidate) != nil {

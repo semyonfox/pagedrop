@@ -29,6 +29,7 @@ type Config struct {
 	MaxExtracted      int64
 	MaxFiles          int
 	UploadsPerMinute  int
+	MaxConcurrent     int
 	TrustProxyHeaders bool
 	DefaultExpiry     time.Duration
 	MaxExpiry         time.Duration
@@ -39,33 +40,34 @@ func Version() string { return version }
 
 func ConfigFromEnv() (Config, error) {
 	c := Config{
-		ListenAddr:       env("PAGEDROP_LISTEN_ADDR", ":8080"),
-		DataDir:          env("PAGEDROP_DATA_DIR", "./data"),
-		PublicBaseURL:    strings.TrimRight(env("PAGEDROP_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
-		UploadToken:      os.Getenv("PAGEDROP_TOKEN"),
-		MaxUpload:        envInt64("PAGEDROP_MAX_UPLOAD_BYTES", 10<<20),
-		MaxExtracted:     envInt64("PAGEDROP_MAX_EXTRACTED_BYTES", 50<<20),
-		MaxFiles:         int(envInt64("PAGEDROP_MAX_FILES", 500)),
-		UploadsPerMinute: int(envInt64("PAGEDROP_UPLOADS_PER_MINUTE", 5)),
+		ListenAddr:       env("SEOL_LISTEN_ADDR", ":8080"),
+		DataDir:          env("SEOL_DATA_DIR", "./data"),
+		PublicBaseURL:    strings.TrimRight(env("SEOL_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
+		UploadToken:      os.Getenv("SEOL_TOKEN"),
+		MaxUpload:        envInt64("SEOL_MAX_UPLOAD_BYTES", 10<<20),
+		MaxExtracted:     envInt64("SEOL_MAX_EXTRACTED_BYTES", 50<<20),
+		MaxFiles:         int(envInt64("SEOL_MAX_FILES", 100)),
+		UploadsPerMinute: int(envInt64("SEOL_UPLOADS_PER_MINUTE", 5)),
+		MaxConcurrent:    int(envInt64("SEOL_MAX_CONCURRENT_UPLOADS", 2)),
 		CleanupInterval:  time.Minute,
 	}
 	var err error
-	if c.TrustProxyHeaders, err = envBool("PAGEDROP_TRUST_PROXY_HEADERS", false); err != nil {
+	if c.TrustProxyHeaders, err = envBool("SEOL_TRUST_PROXY_HEADERS", false); err != nil {
 		return Config{}, err
 	}
-	if c.DefaultExpiry, err = parseExpiry(env("PAGEDROP_DEFAULT_EXPIRY", "1d")); err != nil {
-		return Config{}, fmt.Errorf("PAGEDROP_DEFAULT_EXPIRY: %w", err)
+	if c.DefaultExpiry, err = parseExpiry(env("SEOL_DEFAULT_EXPIRY", "1d")); err != nil {
+		return Config{}, fmt.Errorf("SEOL_DEFAULT_EXPIRY: %w", err)
 	}
-	if c.MaxExpiry, err = parseExpiry(env("PAGEDROP_MAX_EXPIRY", "7d")); err != nil {
-		return Config{}, fmt.Errorf("PAGEDROP_MAX_EXPIRY: %w", err)
+	if c.MaxExpiry, err = parseExpiry(env("SEOL_MAX_EXPIRY", "7d")); err != nil {
+		return Config{}, fmt.Errorf("SEOL_MAX_EXPIRY: %w", err)
 	}
 	if c.UploadToken == "" {
-		return Config{}, errors.New("PAGEDROP_TOKEN is required")
+		return Config{}, errors.New("SEOL_TOKEN is required")
 	}
 	if len(c.UploadToken) < 32 {
-		return Config{}, errors.New("PAGEDROP_TOKEN must be at least 32 characters")
+		return Config{}, errors.New("SEOL_TOKEN must be at least 32 characters")
 	}
-	if c.MaxUpload <= 0 || c.MaxExtracted <= 0 || c.MaxFiles <= 0 || c.UploadsPerMinute <= 0 {
+	if c.MaxUpload <= 0 || c.MaxExtracted <= 0 || c.MaxFiles <= 0 || c.UploadsPerMinute <= 0 || c.MaxConcurrent <= 0 {
 		return Config{}, errors.New("upload limits must be positive")
 	}
 	return c, nil
@@ -107,6 +109,7 @@ type Server struct {
 	db            *sql.DB
 	httpServer    *http.Server
 	uploadLimiter *uploadRateLimiter
+	uploadSlots   chan struct{}
 }
 
 func New(cfg Config) (*Server, error) {
@@ -117,10 +120,13 @@ func New(cfg Config) (*Server, error) {
 		cfg.MaxExtracted = 50 << 20
 	}
 	if cfg.MaxFiles == 0 {
-		cfg.MaxFiles = 500
+		cfg.MaxFiles = 100
 	}
 	if cfg.UploadsPerMinute == 0 {
 		cfg.UploadsPerMinute = 5
+	}
+	if cfg.MaxConcurrent == 0 {
+		cfg.MaxConcurrent = 2
 	}
 	if cfg.DefaultExpiry == 0 {
 		cfg.DefaultExpiry = 24 * time.Hour
@@ -137,7 +143,7 @@ func New(cfg Config) (*Server, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "pages"), 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	db, err := openDatabase(filepath.Join(cfg.DataDir, "pagedrop.db"))
+	db, err := openDatabase(filepath.Join(cfg.DataDir, "seol.db"))
 	if err != nil {
 		return nil, err
 	}
@@ -145,15 +151,17 @@ func New(cfg Config) (*Server, error) {
 		cfg:           cfg,
 		db:            db,
 		uploadLimiter: newUploadRateLimiter(cfg.UploadsPerMinute, time.Minute),
+		uploadSlots:   make(chan struct{}, cfg.MaxConcurrent),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.landingPage)
 	mux.HandleFunc("GET /health", s.health)
-	mux.HandleFunc("POST /api/v1/pages", s.limitUploads(s.createPage))
+	mux.HandleFunc("POST /api/v1/pages", s.auth(s.limitUploads(s.limitUploadConcurrency(s.createPage))))
 	mux.HandleFunc("GET /api/v1/pages", s.auth(s.listPages))
 	mux.HandleFunc("GET /api/v1/stats", s.auth(s.getStats))
 	mux.HandleFunc("GET /api/v1/pages/{id}", s.auth(s.getPage))
-	mux.HandleFunc("PUT /api/v1/pages/{id}/content", s.auth(s.replacePage))
+	mux.HandleFunc("PUT /api/v1/pages/{id}/content", s.auth(s.limitUploadConcurrency(s.replacePage)))
+	mux.HandleFunc("PATCH /api/v1/pages/{id}", s.auth(s.updatePage))
 	mux.HandleFunc("DELETE /api/v1/pages/{id}", s.auth(s.deletePage))
 	mux.HandleFunc("GET /p/{id}/{path...}", s.servePage)
 	s.httpServer = &http.Server{

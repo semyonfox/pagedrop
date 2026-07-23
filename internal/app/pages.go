@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -99,6 +100,45 @@ func (s *Server) deletePage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) updatePage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	current, err := s.getPageRecord(id)
+	if errors.Is(err, sql.ErrNoRows) || current.Status != "active" {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Active page not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "Could not read page.")
+		return
+	}
+	var request struct {
+		ExpiresIn string `json:"expires_in"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || strings.TrimSpace(request.ExpiresIn) == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "Provide expires_in as JSON.")
+		return
+	}
+	expiresAt, ttl, err := s.expiryFromForm(request.ExpiresIn, time.Duration(current.TTLSeconds)*time.Second)
+	if err != nil || expiresAt == nil {
+		message := "Expiry must be between one hour and seven days."
+		if err != nil {
+			message = err.Error()
+		}
+		writeError(w, http.StatusBadRequest, "INVALID_EXPIRY", message)
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.ExecContext(r.Context(), `UPDATE pages SET updated_at=?,expires_at=?,ttl_seconds=? WHERE id=? AND status='active'`, now, expiresAt.UTC().Format(time.RFC3339), int64(ttl/time.Second), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "Could not update expiry.")
+		return
+	}
+	updated, _ := s.getPageRecord(id)
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func removePageFiles(dataDir, id string) error {
 	if !validID(id) {
 		return errors.New("invalid page id")
@@ -130,7 +170,7 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.Status == "deleted" {
-		http.NotFound(w, r)
+		writeGonePage(w)
 		return
 	}
 	if p.Status == "expired" || isExpired(p.ExpiresAt) {
@@ -138,7 +178,7 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request) {
 			_, _ = s.db.Exec(`UPDATE pages SET status='expired' WHERE id=?`, id)
 			_ = removePageFiles(s.cfg.DataDir, id)
 		}
-		writeError(w, http.StatusGone, "EXPIRED", "This page has expired.")
+		writeGonePage(w)
 		return
 	}
 	requestPath := r.PathValue("path")
@@ -179,6 +219,13 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 	}
 	http.ServeFile(w, r, path)
+}
+
+func writeGonePage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.WriteHeader(http.StatusGone)
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Link expired — Seol</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#faf7f2;color:#201d19;font:18px/1.6 system-ui,sans-serif}main{width:min(34rem,calc(100% - 2rem))}h1{font-size:clamp(2.4rem,8vw,4.5rem);letter-spacing:-.04em;line-height:1;margin:0 0 1rem}p{color:#6d655c}</style><main><h1>This link has expired</h1><p>Seol pages are temporary. This page has expired or been removed and is no longer available.</p></main></html>`))
 }
 
 func isExpired(value *string) bool {

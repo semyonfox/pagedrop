@@ -1,36 +1,37 @@
 services:
-  pagedrop:
-    container_name: pagedrop
+  seol:
+    container_name: seol
     build: .
     restart: unless-stopped
     ports:
       - "127.0.0.1:8788:8080"
     environment:
-      PAGEDROP_TOKEN: ${PAGEDROP_TOKEN:?set PAGEDROP_TOKEN in .env}
-      PAGEDROP_DATA_DIR: /data
-      PAGEDROP_PUBLIC_BASE_URL: ${PAGEDROP_PUBLIC_BASE_URL:-http://localhost:8080}
-      PAGEDROP_DEFAULT_EXPIRY: ${PAGEDROP_DEFAULT_EXPIRY:-1d}
-      PAGEDROP_MAX_EXPIRY: ${PAGEDROP_MAX_EXPIRY:-7d}
-      PAGEDROP_MAX_UPLOAD_BYTES: ${PAGEDROP_MAX_UPLOAD_BYTES:-10485760}
-      PAGEDROP_MAX_EXTRACTED_BYTES: ${PAGEDROP_MAX_EXTRACTED_BYTES:-52428800}
-      PAGEDROP_MAX_FILES: ${PAGEDROP_MAX_FILES:-500}
-      PAGEDROP_UPLOADS_PER_MINUTE: ${PAGEDROP_UPLOADS_PER_MINUTE:-5}
-      PAGEDROP_TRUST_PROXY_HEADERS: ${PAGEDROP_TRUST_PROXY_HEADERS:-false}
+      SEOL_TOKEN: ${SEOL_TOKEN:?set SEOL_TOKEN in .env}
+      SEOL_DATA_DIR: /data
+      SEOL_PUBLIC_BASE_URL: ${SEOL_PUBLIC_BASE_URL:-http://localhost:8080}
+      SEOL_DEFAULT_EXPIRY: ${SEOL_DEFAULT_EXPIRY:-1d}
+      SEOL_MAX_EXPIRY: ${SEOL_MAX_EXPIRY:-7d}
+      SEOL_MAX_UPLOAD_BYTES: ${SEOL_MAX_UPLOAD_BYTES:-10485760}
+      SEOL_MAX_EXTRACTED_BYTES: ${SEOL_MAX_EXTRACTED_BYTES:-52428800}
+      SEOL_MAX_FILES: ${SEOL_MAX_FILES:-100}
+      SEOL_UPLOADS_PER_MINUTE: ${SEOL_UPLOADS_PER_MINUTE:-5}
+      SEOL_MAX_CONCURRENT_UPLOADS: ${SEOL_MAX_CONCURRENT_UPLOADS:-2}
+      SEOL_TRUST_PROXY_HEADERS: ${SEOL_TRUST_PROXY_HEADERS:-false}
     volumes:
-      - pagedrop-data:/data
+      - seol-data:/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
 
   cloudflared:
-    container_name: pagedrop-tunnel
+    container_name: seol-tunnel
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
     depends_on:
-      pagedrop:
+      seol:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -38,5 +39,5 @@ services:
       - ALL
 
 volumes:
-  pagedrop-data:
-    name: pagedrop-data
+  seol-data:
+    name: seol-data

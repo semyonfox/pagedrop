@@ -1,7 +1,7 @@
 .PHONY: build test check docker
 
 build:
-	go build -trimpath -o pagedrop ./cmd/pagedrop
+	go build -trimpath -o seol ./cmd/seol
 
 test:
 	go test -race ./...
@@ -12,4 +12,4 @@ check:
 	go test -race ./...
 
 docker:
-	docker build -t pagedrop:dev .
+	docker build -t seol:dev .

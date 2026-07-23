@@ -10,8 +10,8 @@ import (
 
 func TestConfigurePreservesStoredToken(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("PAGEDROP_SERVER", "")
-	t.Setenv("PAGEDROP_TOKEN", "")
+	t.Setenv("SEOL_SERVER", "")
+	t.Setenv("SEOL_TOKEN", "")
 
 	if err := ConfigureCLI([]string{"--server", "https://old.example", "--token", "stored-admin-token"}); err != nil {
 		t.Fatal(err)
