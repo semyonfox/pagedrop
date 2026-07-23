@@ -21,32 +21,38 @@ import (
 var version = "dev"
 
 type Config struct {
-	ListenAddr      string
-	DataDir         string
-	PublicBaseURL   string
-	UploadToken     string
-	MaxUpload       int64
-	MaxExtracted    int64
-	MaxFiles        int
-	DefaultExpiry   time.Duration
-	MaxExpiry       time.Duration
-	CleanupInterval time.Duration
+	ListenAddr        string
+	DataDir           string
+	PublicBaseURL     string
+	UploadToken       string
+	MaxUpload         int64
+	MaxExtracted      int64
+	MaxFiles          int
+	UploadsPerMinute  int
+	TrustProxyHeaders bool
+	DefaultExpiry     time.Duration
+	MaxExpiry         time.Duration
+	CleanupInterval   time.Duration
 }
 
 func Version() string { return version }
 
 func ConfigFromEnv() (Config, error) {
 	c := Config{
-		ListenAddr:      env("PAGEDROP_LISTEN_ADDR", ":8080"),
-		DataDir:         env("PAGEDROP_DATA_DIR", "./data"),
-		PublicBaseURL:   strings.TrimRight(env("PAGEDROP_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
-		UploadToken:     os.Getenv("PAGEDROP_TOKEN"),
-		MaxUpload:       envInt64("PAGEDROP_MAX_UPLOAD_BYTES", 10<<20),
-		MaxExtracted:    envInt64("PAGEDROP_MAX_EXTRACTED_BYTES", 50<<20),
-		MaxFiles:        int(envInt64("PAGEDROP_MAX_FILES", 500)),
-		CleanupInterval: time.Minute,
+		ListenAddr:       env("PAGEDROP_LISTEN_ADDR", ":8080"),
+		DataDir:          env("PAGEDROP_DATA_DIR", "./data"),
+		PublicBaseURL:    strings.TrimRight(env("PAGEDROP_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
+		UploadToken:      os.Getenv("PAGEDROP_TOKEN"),
+		MaxUpload:        envInt64("PAGEDROP_MAX_UPLOAD_BYTES", 10<<20),
+		MaxExtracted:     envInt64("PAGEDROP_MAX_EXTRACTED_BYTES", 50<<20),
+		MaxFiles:         int(envInt64("PAGEDROP_MAX_FILES", 500)),
+		UploadsPerMinute: int(envInt64("PAGEDROP_UPLOADS_PER_MINUTE", 5)),
+		CleanupInterval:  time.Minute,
 	}
 	var err error
+	if c.TrustProxyHeaders, err = envBool("PAGEDROP_TRUST_PROXY_HEADERS", false); err != nil {
+		return Config{}, err
+	}
 	if c.DefaultExpiry, err = parseExpiry(env("PAGEDROP_DEFAULT_EXPIRY", "1d")); err != nil {
 		return Config{}, fmt.Errorf("PAGEDROP_DEFAULT_EXPIRY: %w", err)
 	}
@@ -59,7 +65,7 @@ func ConfigFromEnv() (Config, error) {
 	if len(c.UploadToken) < 32 {
 		return Config{}, errors.New("PAGEDROP_TOKEN must be at least 32 characters")
 	}
-	if c.MaxUpload <= 0 || c.MaxExtracted <= 0 || c.MaxFiles <= 0 {
+	if c.MaxUpload <= 0 || c.MaxExtracted <= 0 || c.MaxFiles <= 0 || c.UploadsPerMinute <= 0 {
 		return Config{}, errors.New("upload limits must be positive")
 	}
 	return c, nil
@@ -84,10 +90,23 @@ func envInt64(name string, fallback int64) int64 {
 	return parsed
 }
 
+func envBool(name string, fallback bool) (bool, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s: use true or false", name)
+	}
+	return parsed, nil
+}
+
 type Server struct {
-	cfg        Config
-	db         *sql.DB
-	httpServer *http.Server
+	cfg           Config
+	db            *sql.DB
+	httpServer    *http.Server
+	uploadLimiter *uploadRateLimiter
 }
 
 func New(cfg Config) (*Server, error) {
@@ -99,6 +118,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.MaxFiles == 0 {
 		cfg.MaxFiles = 500
+	}
+	if cfg.UploadsPerMinute == 0 {
+		cfg.UploadsPerMinute = 5
 	}
 	if cfg.DefaultExpiry == 0 {
 		cfg.DefaultExpiry = 24 * time.Hour
@@ -116,11 +138,15 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, db: db}
+	s := &Server{
+		cfg:           cfg,
+		db:            db,
+		uploadLimiter: newUploadRateLimiter(cfg.UploadsPerMinute, time.Minute),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.landingPage)
 	mux.HandleFunc("GET /health", s.health)
-	mux.HandleFunc("POST /api/v1/pages", s.createPage)
+	mux.HandleFunc("POST /api/v1/pages", s.limitUploads(s.createPage))
 	mux.HandleFunc("GET /api/v1/pages", s.auth(s.listPages))
 	mux.HandleFunc("GET /api/v1/stats", s.auth(s.getStats))
 	mux.HandleFunc("GET /api/v1/pages/{id}", s.auth(s.getPage))

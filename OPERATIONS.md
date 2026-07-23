@@ -45,7 +45,7 @@ Before changing the live service:
 1. Run `make check`.
 2. Build a versioned image; do not replace the rollback image tag.
 3. Preserve `PAGEDROP_TOKEN`, `PAGEDROP_PUBLIC_BASE_URL`, expiry settings, and
-   the `pagedrop-data:/data` mount.
+   the upload rate/proxy settings and `pagedrop-data:/data` mount.
 4. Start the replacement with host port `127.0.0.1:8788` mapped to container
    port `8080`.
 5. Verify local health, public health, and an authenticated `pagedrop stats`.
@@ -88,11 +88,18 @@ There is deliberately no web admin dashboard. The authenticated CLI provides
 the useful management surface without adding sessions, cookies, or another
 privileged UI to secure.
 
-## Outstanding abuse control
+## Abuse control
 
 Anonymous publishing is protected by the application limits (10 MiB uploaded,
 50 MiB extracted, 500 archive entries, one-day default expiry, seven-day
-maximum), but upload rate limiting is not implemented in PageDrop. Add a
-Cloudflare rate-limiting rule for `POST /api/v1/pages` before advertising the
-instance broadly. A reasonable starting point is five uploads per minute per
-source IP; public page reads should remain outside that rule.
+maximum) and a built-in upload rate limit. Production sets
+`PAGEDROP_UPLOADS_PER_MINUTE=5` and `PAGEDROP_TRUST_PROXY_HEADERS=true`, so
+PageDrop groups requests by Cloudflare's validated `CF-Connecting-IP` value.
+Enable trusted proxy headers only while the origin remains private behind the
+tunnel.
+
+An equivalent Cloudflare rate-limiting rule for `POST /api/v1/pages` is useful
+defense in depth when the zone plan supports method matching. Keep public page
+reads and authenticated management requests outside that edge rule. The
+application limit remains authoritative because Cloudflare rate-limit matching
+capabilities vary by plan.

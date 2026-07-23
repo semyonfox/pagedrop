@@ -17,6 +17,28 @@ Expires: 2026-07-29T20:00:00Z
 PageDrop deliberately runs no uploaded server-side code. HTML, CSS, JavaScript,
 images, fonts, JSON, SVG, WASM, and other static assets are served as files.
 
+## Why PageDrop exists
+
+AI agents are increasingly good at turning work into useful little HTML
+artifacts: a benchmark report, a chart of service statistics, a comparison
+dashboard, a diagram, a set of generated documentation, or a one-off demo.
+Generating the page is easy. Handing it to someone else is often the awkward
+part.
+
+Without a publishing step, the result is commonly trapped in a temporary
+directory, attached as a file, or served by a local process that disappears as
+soon as the agent finishes. PageDrop gives the agent one deliberately small
+last step: upload the static artifact and return a normal URL. The page remains
+available independently of the agent process, is easy to open on any device,
+and can be shared with a friend or collaborator without deploying an
+application.
+
+PageDrop is intentionally temporary rather than archival. Links expire after a
+day by default, uploads are tightly bounded and rate-limited, and uploaded code
+never runs on the server. It is a quick handoff layer for generated artifacts,
+not a replacement for source control, permanent hosting, or a general-purpose
+file store.
+
 ## Features
 
 - One lightweight Go binary for both server and CLI
@@ -27,6 +49,7 @@ images, fonts, JSON, SVG, WASM, and other static assets are served as files.
 - Configurable expiry with automatic cleanup
 - Atomic page replacement without changing the URL
 - Safe ZIP extraction and compressed/extracted/file-count limits
+- Per-source upload rate limiting with trusted-proxy support
 - ETags and cache revalidation without stale replacements
 - Structured JSON API and deterministic CLI output modes
 - Non-root, capability-free Docker deployment
@@ -143,6 +166,10 @@ Publishing remains anonymous. Do not commit the admin token or tunnel token.
 See [OPERATIONS.md](OPERATIONS.md) for the deployment handoff, health checks,
 upgrade procedure, and rollback notes.
 
+The public instance accepts at most five uploads per minute from each source IP.
+That limit is enforced by PageDrop even when an equivalent Cloudflare rule is
+not available on the zone's plan.
+
 ## HTTP API
 
 Publishing is anonymous. Statistics, listing, inspecting, replacing, and
@@ -212,6 +239,8 @@ data.
 | `PAGEDROP_MAX_UPLOAD_BYTES` | `10485760` (10 MiB) |
 | `PAGEDROP_MAX_EXTRACTED_BYTES` | `52428800` (50 MiB) |
 | `PAGEDROP_MAX_FILES` | `500` archive entries |
+| `PAGEDROP_UPLOADS_PER_MINUTE` | `5` |
+| `PAGEDROP_TRUST_PROXY_HEADERS` | `false`; enable only behind a trusted proxy |
 
 ## Development
 
@@ -228,10 +257,11 @@ post-delete access.
 
 ## Scope
 
-PageDrop v1 is intentionally single-owner. It does not provide registration,
-teams, billing, server-side runtimes, passwords for individual pages, analytics,
-or object storage. SQLite plus local files is the simplest reliable deployment;
-PostgreSQL and R2/S3 become useful only when running multiple server replicas.
+PageDrop v1 is intentionally single-operator, even when publishing is open to a
+wider audience. It does not provide registration, teams, billing, server-side
+runtimes, passwords for individual pages, analytics, or object storage. SQLite
+plus local files is the simplest reliable deployment; PostgreSQL and R2/S3
+become useful only when running multiple server replicas.
 
 ## License
 

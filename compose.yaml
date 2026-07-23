@@ -1,5 +1,6 @@
 services:
   pagedrop:
+    container_name: pagedrop
     build: .
     restart: unless-stopped
     ports:
@@ -13,14 +14,17 @@ services:
       PAGEDROP_MAX_UPLOAD_BYTES: ${PAGEDROP_MAX_UPLOAD_BYTES:-10485760}
       PAGEDROP_MAX_EXTRACTED_BYTES: ${PAGEDROP_MAX_EXTRACTED_BYTES:-52428800}
       PAGEDROP_MAX_FILES: ${PAGEDROP_MAX_FILES:-500}
+      PAGEDROP_UPLOADS_PER_MINUTE: ${PAGEDROP_UPLOADS_PER_MINUTE:-5}
+      PAGEDROP_TRUST_PROXY_HEADERS: ${PAGEDROP_TRUST_PROXY_HEADERS:-true}
     volumes:
-      - ./data:/data
+      - pagedrop-data:/data
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
 
   cloudflared:
+    container_name: pagedrop-tunnel
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]
     restart: unless-stopped
@@ -32,3 +36,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  pagedrop-data:
+    name: pagedrop-data

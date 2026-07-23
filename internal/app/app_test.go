@@ -41,9 +41,62 @@ func TestTemporaryPublicDefaults(t *testing.T) {
 	if s.cfg.DefaultExpiry != 24*time.Hour || s.cfg.MaxExpiry != 7*24*time.Hour {
 		t.Fatalf("expiry defaults = %s / %s", s.cfg.DefaultExpiry, s.cfg.MaxExpiry)
 	}
-	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 500 {
-		t.Fatalf("upload defaults = %d / %d / %d", s.cfg.MaxUpload, s.cfg.MaxExtracted, s.cfg.MaxFiles)
+	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 500 || s.cfg.UploadsPerMinute != 5 {
+		t.Fatalf("upload defaults = %d / %d / %d / %d", s.cfg.MaxUpload, s.cfg.MaxExtracted, s.cfg.MaxFiles, s.cfg.UploadsPerMinute)
 	}
+}
+
+func TestUploadRateLimitUsesTrustedCloudflareIP(t *testing.T) {
+	s, err := New(Config{
+		DataDir:           t.TempDir(),
+		PublicBaseURL:     "https://pages.test",
+		UploadToken:       "admin-token",
+		MaxUpload:         1 << 20,
+		UploadsPerMinute:  2,
+		TrustProxyHeaders: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+
+	upload := func(ip string) *http.Response {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, _ := writer.CreateFormFile("file", "page.html")
+		_, _ = part.Write([]byte("<h1>hello</h1>"))
+		_ = writer.Close()
+		req, _ := http.NewRequest(http.MethodPost, web.URL+"/api/v1/pages", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("CF-Connecting-IP", ip)
+		resp, requestErr := http.DefaultClient.Do(req)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return resp
+	}
+
+	for i := 0; i < 2; i++ {
+		resp := upload("203.0.113.10")
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("upload %d status = %d", i+1, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	resp := upload("203.0.113.10")
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("limited status=%d headers=%v", resp.StatusCode, resp.Header)
+	}
+	resp.Body.Close()
+
+	resp = upload("203.0.113.11")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("other client status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
 }
 
 func TestUploadServeListDelete(t *testing.T) {
