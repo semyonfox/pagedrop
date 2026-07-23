@@ -19,6 +19,8 @@ import (
 
 type clientConfig struct{ Server, Token string }
 
+var managementHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 func ConfigureCLI(args []string) error {
 	flags := flag.NewFlagSet("configure", flag.ContinueOnError)
 	server := flags.String("server", "", "PageDrop server URL")
@@ -38,8 +40,12 @@ func ConfigureCLI(args []string) error {
 		return err
 	}
 	content := fmt.Sprintf("server = %s\n", strconv.Quote(strings.TrimRight(*server, "/")))
-	if *token != "" {
-		content += fmt.Sprintf("token = %s\n", strconv.Quote(*token))
+	tokenToStore := *token
+	if tokenToStore == "" {
+		tokenToStore = readClientConfigFile().Token
+	}
+	if tokenToStore != "" {
+		content += fmt.Sprintf("token = %s\n", strconv.Quote(tokenToStore))
 	}
 	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -51,6 +57,18 @@ func ConfigureCLI(args []string) error {
 
 func loadClientConfig() clientConfig {
 	c := clientConfig{Server: env("PAGEDROP_SERVER", "http://localhost:8788"), Token: os.Getenv("PAGEDROP_TOKEN")}
+	stored := readClientConfigFile()
+	if os.Getenv("PAGEDROP_SERVER") == "" && stored.Server != "" {
+		c.Server = stored.Server
+	}
+	if os.Getenv("PAGEDROP_TOKEN") == "" {
+		c.Token = stored.Token
+	}
+	return c
+}
+
+func readClientConfigFile() clientConfig {
+	var c clientConfig
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return c
@@ -70,13 +88,9 @@ func loadClientConfig() clientConfig {
 		}
 		switch strings.TrimSpace(parts[0]) {
 		case "server":
-			if os.Getenv("PAGEDROP_SERVER") == "" {
-				c.Server = value
-			}
+			c.Server = value
 		case "token":
-			if os.Getenv("PAGEDROP_TOKEN") == "" {
-				c.Token = value
-			}
+			c.Token = value
 		}
 	}
 	return c
@@ -401,7 +415,7 @@ func clientRequest(method, url, token string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := managementHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

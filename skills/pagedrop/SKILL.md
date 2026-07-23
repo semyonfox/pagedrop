@@ -29,8 +29,8 @@ not configured, ask the user to run:
 pagedrop configure --server URL
 ```
 
-Management still requires the instance's admin token. Manage only when
-requested:
+Management still requires the instance's admin token. Never print it or the
+configuration. Manage only when requested:
 
 ```bash
 pagedrop list

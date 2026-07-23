@@ -138,6 +138,7 @@ or LAN-wide listener is needed.
 ```env
 TUNNEL_TOKEN=YOUR_CLOUDFLARE_TUNNEL_TOKEN
 PAGEDROP_PUBLIC_BASE_URL=https://pages.example.com
+PAGEDROP_TRUST_PROXY_HEADERS=true
 ```
 
 5. Start both services:
@@ -148,7 +149,9 @@ docker compose --profile tunnel up --build -d
 
 Uploaded pages are arbitrary untrusted JavaScript. Prefer a dedicated content
 hostname or registrable domain with no authentication cookies. PageDrop itself
-uses bearer headers and does not set cookies.
+uses bearer headers and does not set cookies. Enable trusted proxy headers only
+when the origin is private and every public request reaches it through the
+Cloudflare Tunnel.
 
 ### Live instance
 
