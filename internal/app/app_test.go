@@ -3,6 +3,7 @@ package app
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -18,9 +19,9 @@ func TestLandingPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	closeTestServer(t, s)
 	recorder := httptest.NewRecorder()
-	s.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	s.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d", recorder.Code)
 	}
@@ -37,12 +38,25 @@ func TestTemporaryPublicDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	closeTestServer(t, s)
 	if s.cfg.DefaultExpiry != 24*time.Hour || s.cfg.MaxExpiry != 7*24*time.Hour {
 		t.Fatalf("expiry defaults = %s / %s", s.cfg.DefaultExpiry, s.cfg.MaxExpiry)
 	}
 	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 500 || s.cfg.UploadsPerMinute != 5 {
 		t.Fatalf("upload defaults = %d / %d / %d / %d", s.cfg.MaxUpload, s.cfg.MaxExtracted, s.cfg.MaxFiles, s.cfg.UploadsPerMinute)
+	}
+}
+
+func TestRejectsIncompatibleExpiryConfiguration(t *testing.T) {
+	_, err := New(Config{
+		DataDir:       t.TempDir(),
+		PublicBaseURL: "https://pages.test",
+		UploadToken:   "admin-token",
+		DefaultExpiry: 8 * 24 * time.Hour,
+		MaxExpiry:     7 * 24 * time.Hour,
+	})
+	if err == nil || !strings.Contains(err.Error(), "default expiry") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -58,7 +72,7 @@ func TestUploadRateLimitUsesTrustedCloudflareIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	closeTestServer(t, s)
 	web := httptest.NewServer(s.httpServer.Handler)
 	defer web.Close()
 
@@ -110,7 +124,7 @@ func TestUploadServeListDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	closeTestServer(t, s)
 	web := httptest.NewServer(s.httpServer.Handler)
 	defer web.Close()
 

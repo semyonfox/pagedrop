@@ -128,6 +128,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.MaxExpiry == 0 {
 		cfg.MaxExpiry = 7 * 24 * time.Hour
 	}
+	if cfg.DefaultExpiry <= 0 || cfg.MaxExpiry < 0 || (cfg.MaxExpiry > 0 && cfg.DefaultExpiry > cfg.MaxExpiry) {
+		return nil, errors.New("default expiry must be positive and not exceed maximum expiry")
+	}
 	if cfg.CleanupInterval == 0 {
 		cfg.CleanupInterval = time.Minute
 	}
