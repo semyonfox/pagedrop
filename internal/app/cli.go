@@ -22,20 +22,21 @@ type clientConfig struct{ Server, Token string }
 var managementHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func ConfigureCLI(args []string) error {
+	current := loadClientConfig()
 	flags := flag.NewFlagSet("configure", flag.ContinueOnError)
-	server := flags.String("server", "", "PageDrop server URL")
+	server := flags.String("server", current.Server, "Seol server URL")
 	token := flags.String("token", "", "upload token")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *server == "" {
-		return errors.New("usage: pagedrop configure --server URL [--token ADMIN_TOKEN]")
+		return errors.New("usage: seol configure [--server URL] [--token TOKEN]")
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return err
 	}
-	dir = filepath.Join(dir, "pagedrop")
+	dir = filepath.Join(dir, "seol")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -56,12 +57,12 @@ func ConfigureCLI(args []string) error {
 }
 
 func loadClientConfig() clientConfig {
-	c := clientConfig{Server: env("PAGEDROP_SERVER", "http://localhost:8788"), Token: os.Getenv("PAGEDROP_TOKEN")}
+	c := clientConfig{Server: env("SEOL_SERVER", "https://seol.semyon.ie"), Token: os.Getenv("SEOL_TOKEN")}
 	stored := readClientConfigFile()
-	if os.Getenv("PAGEDROP_SERVER") == "" && stored.Server != "" {
+	if os.Getenv("SEOL_SERVER") == "" && stored.Server != "" {
 		c.Server = stored.Server
 	}
-	if os.Getenv("PAGEDROP_TOKEN") == "" {
+	if os.Getenv("SEOL_TOKEN") == "" {
 		c.Token = stored.Token
 	}
 	return c
@@ -73,7 +74,7 @@ func readClientConfigFile() clientConfig {
 	if err != nil {
 		return c
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "pagedrop", "config.toml"))
+	data, err := os.ReadFile(filepath.Join(dir, "seol", "config.toml"))
 	if err != nil {
 		return c
 	}
@@ -99,7 +100,7 @@ func readClientConfigFile() clientConfig {
 func UploadCLI(args []string) error { return uploadCommand(http.MethodPost, "", args) }
 func ReplaceCLI(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: pagedrop replace PAGE_ID [options] FILE_OR_DIRECTORY")
+		return errors.New("usage: seol replace PAGE_ID [options] FILE_OR_DIRECTORY")
 	}
 	id := args[0]
 	return uploadCommand(http.MethodPut, id, args[1:])
@@ -108,7 +109,7 @@ func ReplaceCLI(args []string) error {
 func uploadCommand(method, id string, args []string) error {
 	cfg := loadClientConfig()
 	flags := flag.NewFlagSet(strings.ToLower(method), flag.ContinueOnError)
-	server := flags.String("server", cfg.Server, "PageDrop server URL")
+	server := flags.String("server", cfg.Server, "Seol server URL")
 	token := flags.String("token", cfg.Token, "upload token")
 	quiet := flags.Bool("quiet", false, "print only the URL")
 	jsonOutput := flags.Bool("json", false, "print JSON")
@@ -120,10 +121,11 @@ func uploadCommand(method, id string, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("provide one HTML file, ZIP archive, or directory")
 	}
-	if method != http.MethodPost && *token == "" {
-		return errors.New("an admin token is required to replace a page")
+	if *token == "" {
+		return errors.New("Seol token is not configured")
 	}
-	path, cleanup, err := uploadPath(flags.Arg(0))
+	sourcePath := flags.Arg(0)
+	path, cleanup, err := uploadPath(sourcePath)
 	if err != nil {
 		return err
 	}
@@ -135,7 +137,11 @@ func uploadCommand(method, id string, args []string) error {
 	defer file.Close()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", filepath.Base(path))
+	uploadName := filepath.Base(sourcePath)
+	if info, statErr := os.Stat(sourcePath); statErr == nil && info.IsDir() {
+		uploadName += ".zip"
+	}
+	part, err := writer.CreateFormFile("file", uploadName)
 	if err != nil {
 		return err
 	}
@@ -201,7 +207,7 @@ func uploadPath(path string) (string, func(), error) {
 	if _, err := os.Stat(filepath.Join(path, "index.html")); err != nil {
 		return "", func() {}, errors.New("directory must contain index.html at its root")
 	}
-	tmp, err := os.CreateTemp("", "pagedrop-*.zip")
+	tmp, err := os.CreateTemp("", "seol-*.zip")
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -262,10 +268,10 @@ func StatsCLI(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: pagedrop stats [--json]")
+		return errors.New("usage: seol stats [--json]")
 	}
 	if *token == "" {
-		return errors.New("PageDrop token is not configured")
+		return errors.New("Seol token is not configured")
 	}
 	body, err := clientRequest(http.MethodGet, strings.TrimRight(*server, "/")+"/api/v1/stats", *token)
 	if err != nil {
@@ -310,7 +316,7 @@ func formatBytes(value int64) string {
 
 func InfoCLI(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: pagedrop info PAGE_ID")
+		return errors.New("usage: seol info PAGE_ID")
 	}
 	return metadataCommand("info", args[0], args[1:])
 }
@@ -325,7 +331,7 @@ func metadataCommand(kind, id string, args []string) error {
 		return err
 	}
 	if *token == "" {
-		return errors.New("PageDrop token is not configured")
+		return errors.New("Seol token is not configured")
 	}
 	endpoint := strings.TrimRight(*server, "/") + "/api/v1/pages"
 	if id != "" {
@@ -389,7 +395,7 @@ func expiryDisplay(value *string) string {
 
 func DeleteCLI(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: pagedrop delete PAGE_ID")
+		return errors.New("usage: seol delete PAGE_ID")
 	}
 	id := args[0]
 	cfg := loadClientConfig()
@@ -400,13 +406,60 @@ func DeleteCLI(args []string) error {
 		return err
 	}
 	if *token == "" {
-		return errors.New("PageDrop token is not configured")
+		return errors.New("Seol token is not configured")
 	}
 	_, err := clientRequest(http.MethodDelete, strings.TrimRight(*server, "/")+"/api/v1/pages/"+id, *token)
 	if err == nil {
 		fmt.Println("Deleted:", id)
 	}
 	return err
+}
+
+func ExpiryCLI(args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: seol expiry PAGE_ID DURATION")
+	}
+	id, duration := args[0], args[1]
+	cfg := loadClientConfig()
+	flags := flag.NewFlagSet("expiry", flag.ContinueOnError)
+	server := flags.String("server", cfg.Server, "server URL")
+	token := flags.String("token", cfg.Token, "token")
+	jsonOutput := flags.Bool("json", false, "JSON output")
+	if err := flags.Parse(args[2:]); err != nil {
+		return err
+	}
+	if *token == "" {
+		return errors.New("Seol token is not configured")
+	}
+	payload, err := json.Marshal(map[string]string{"expires_in": duration})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPatch, strings.TrimRight(*server, "/")+"/api/v1/pages/"+id, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+*token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := managementHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("request failed (%s): %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if *jsonOutput {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+	var p page
+	if err := json.Unmarshal(body, &p); err != nil {
+		return err
+	}
+	fmt.Printf("Expires: %s\n", expiryDisplay(p.ExpiresAt))
+	return nil
 }
 
 func clientRequest(method, url, token string) ([]byte, error) {

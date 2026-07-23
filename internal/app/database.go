@@ -17,6 +17,7 @@ type page struct {
 	SizeBytes      int64   `json:"size_bytes"`
 	FileCount      int     `json:"file_count"`
 	ContentVersion int     `json:"content_version"`
+	TTLSeconds     int64   `json:"ttl_seconds"`
 }
 
 func openDatabase(path string) (*sql.DB, error) {
@@ -34,7 +35,8 @@ func openDatabase(path string) (*sql.DB, error) {
 		expires_at TEXT,
 		size_bytes INTEGER NOT NULL,
 		file_count INTEGER NOT NULL DEFAULT 1,
-		content_version INTEGER NOT NULL DEFAULT 1
+		content_version INTEGER NOT NULL DEFAULT 1,
+		ttl_seconds INTEGER NOT NULL DEFAULT 86400
 	)`)
 	if err != nil {
 		db.Close()
@@ -48,17 +50,19 @@ func openDatabase(path string) (*sql.DB, error) {
 		`ALTER TABLE pages ADD COLUMN expires_at TEXT`,
 		`ALTER TABLE pages ADD COLUMN file_count INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE pages ADD COLUMN content_version INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE pages ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 86400`,
 	} {
 		_, _ = db.Exec(statement)
 	}
 	_, _ = db.Exec(`UPDATE pages SET updated_at = created_at WHERE updated_at = ''`)
+	_, _ = db.Exec(`UPDATE pages SET ttl_seconds = MIN(604800, MAX(1, CAST((julianday(expires_at) - julianday(created_at)) * 86400 AS INTEGER))) WHERE expires_at IS NOT NULL AND ttl_seconds = 86400`)
 	return db, nil
 }
 
 func (s *Server) scanPage(scanner interface{ Scan(...any) error }) (page, error) {
 	var p page
 	var expires sql.NullString
-	err := scanner.Scan(&p.ID, &p.Title, &p.Status, &p.CreatedAt, &p.UpdatedAt, &expires, &p.SizeBytes, &p.FileCount, &p.ContentVersion)
+	err := scanner.Scan(&p.ID, &p.Title, &p.Status, &p.CreatedAt, &p.UpdatedAt, &expires, &p.SizeBytes, &p.FileCount, &p.ContentVersion, &p.TTLSeconds)
 	if expires.Valid {
 		p.ExpiresAt = &expires.String
 	}
@@ -66,7 +70,7 @@ func (s *Server) scanPage(scanner interface{ Scan(...any) error }) (page, error)
 	return p, err
 }
 
-const pageColumns = `id, title, status, created_at, updated_at, expires_at, size_bytes, file_count, content_version`
+const pageColumns = `id, title, status, created_at, updated_at, expires_at, size_bytes, file_count, content_version, ttl_seconds`
 
 func (s *Server) getPageRecord(id string) (page, error) {
 	return s.scanPage(s.db.QueryRow(`SELECT `+pageColumns+` FROM pages WHERE id = ?`, id))

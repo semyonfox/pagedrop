@@ -11,8 +11,8 @@ var landingPageTemplate = template.Must(template.New("landing").Parse(`<!doctype
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="PageDrop publishes static HTML pages and returns shareable URLs.">
-  <title>PageDrop — publish an HTML page</title>
+  <meta name="description" content="Seol publishes static HTML pages and returns shareable URLs.">
+  <title>Seol — publish an HTML page</title>
   <style>
     :root { color-scheme: light; --paper:#faf7f2; --ink:#201d19; --muted:#6d655c; --line:#ddd5ca; --panel:#f1ece4; --accent:#b84c20; }
     * { box-sizing:border-box; }
@@ -47,7 +47,7 @@ var landingPageTemplate = template.Must(template.New("landing").Parse(`<!doctype
 <body>
 <main>
   <header>
-    <h1>PageDrop</h1>
+    <h1>Seol</h1>
     <p class="tagline">Publish an HTML page. Get a shareable URL.</p>
     <p class="intro">A small self-hosted service for static reports, dashboards, demos, documentation, and pages made by AI agents. Upload a file, directory, or ZIP from the command line.</p>
     <a class="instance" href="{{.PublicBaseURL}}">{{.PublicBaseURL}}</a>
@@ -57,60 +57,61 @@ var landingPageTemplate = template.Must(template.New("landing").Parse(`<!doctype
     <h2 id="quick-start">Install and publish</h2>
     <p>On Linux amd64:</p>
     <pre><code>mkdir -p ~/.local/bin
-curl -fL https://github.com/semyonfox/pagedrop/releases/latest/download/pagedrop-linux-amd64 \
-  -o ~/.local/bin/pagedrop
-chmod +x ~/.local/bin/pagedrop</code></pre>
-    <p class="note">Other platforms are on <a href="https://github.com/semyonfox/pagedrop/releases/latest">GitHub Releases</a>. With Go installed, use <code>go install github.com/semyonfox/pagedrop/cmd/pagedrop@latest</code>.</p>
-    <pre><code>pagedrop configure --server {{.PublicBaseURL}}
-pagedrop upload ./report
+curl -fL https://github.com/semyonfox/seol/releases/latest/download/seol-linux-amd64 \
+  -o ~/.local/bin/seol
+chmod +x ~/.local/bin/seol</code></pre>
+    <p class="note">Other platforms are on <a href="https://github.com/semyonfox/seol/releases/latest">GitHub Releases</a>. With Go installed, use <code>go install github.com/semyonfox/seol/cmd/seol@latest</code>.</p>
+    <pre><code>seol configure --server {{.PublicBaseURL}} --token TOKEN
+seol publish ./report
 <span class="result">Published: {{.PublicBaseURL}}/p/…/</span></code></pre>
     <p>Standalone HTML files work directly. Directories and ZIP archives need an <code>index.html</code> at their root.</p>
-    <p class="note">Uploads are limited to 10 MiB compressed, 50 MiB extracted, and 500 archive entries.</p>
+    <p class="note">Uploads are limited to 10 MiB compressed, 50 MiB extracted, and 100 archive entries.</p>
   </section>
 
   <section aria-labelledby="how-it-works">
     <h2 id="how-it-works">How it works</h2>
     <div class="facts">
       <div><h3>Static only</h3><p>HTML, CSS, JavaScript, images, fonts, JSON, SVG, and WASM are served as files. Uploaded server-side code never runs.</p></div>
-      <div><h3>Random URLs</h3><p>Each page gets a cryptographically random public link. Publishing needs no account or token.</p></div>
-      <div><h3>Temporary</h3><p>Pages live for one day by default and at most seven days. Expired content is removed automatically.</p></div>
+      <div><h3>Random URLs</h3><p>Each page gets a cryptographically random public link. Publishing uses one configured server token; viewing needs none.</p></div>
+      <div><h3>Temporary</h3><p>Pages live for one day by default and at most seven days after their latest update. Expired content is removed automatically.</p></div>
     </div>
   </section>
 
   <section aria-labelledby="commands">
     <h2 id="commands">The commands</h2>
-    <pre><code>pagedrop upload [--title TITLE] [--expires 7d] [--quiet|--json] PATH
-pagedrop list
-pagedrop stats
-pagedrop info PAGE_ID
-pagedrop replace PAGE_ID PATH
-pagedrop delete PAGE_ID</code></pre>
+    <pre><code>seol publish [--title TITLE] [--expires 7d] [--quiet|--json] PATH
+seol list
+seol stats
+seol info PAGE_ID
+seol replace PAGE_ID PATH
+seol expiry PAGE_ID 3d
+seol delete PAGE_ID</code></pre>
     <p class="note"><code>--quiet</code> prints only the URL for scripts and agents. <code>--json</code> returns machine-readable output.</p>
   </section>
 
   <section aria-labelledby="agents">
     <h2 id="agents">For coding agents</h2>
-    <p>Ask Codex to use <code>$skill-installer</code> to install the PageDrop skill from <a href="https://github.com/semyonfox/pagedrop/tree/main/skills/pagedrop">the repository</a>. Or give any agent this instruction:</p>
+    <p>Ask Codex to use <code>$skill-installer</code> to install the Seol skill from <a href="https://github.com/semyonfox/seol/tree/main/skills/seol">the repository</a>. Or give any agent this instruction:</p>
     <pre><code>Create a static website in a temporary directory with index.html at its root.
 Publish it by running:
 
-    pagedrop upload --quiet DIRECTORY
+    seol publish --quiet DIRECTORY
 
 Return the printed URL. Never publish credentials or private data.</code></pre>
   </section>
 
   <section aria-labelledby="self-host">
     <h2 id="self-host">Run your own</h2>
-    <p>PageDrop is one Go binary with SQLite metadata and filesystem storage. The included Compose setup can run it with an optional Cloudflare Tunnel sidecar.</p>
-    <pre><code>git clone https://github.com/semyonfox/pagedrop.git
-cd pagedrop
+    <p>Seol is one Go binary with SQLite metadata and filesystem storage. The included Compose setup can run it with an optional Cloudflare Tunnel sidecar.</p>
+    <pre><code>git clone https://github.com/semyonfox/seol.git
+cd seol
 cp .env.example .env
-# Set PAGEDROP_TOKEN in .env, then:
+# Set SEOL_TOKEN in .env, then:
 docker compose up --build -d</code></pre>
-    <p class="note">See the <a href="https://github.com/semyonfox/pagedrop#quick-start">README</a> for configuration and tunnel setup.</p>
+    <p class="note">See the <a href="https://github.com/semyonfox/seol#quick-start">README</a> for configuration and tunnel setup.</p>
   </section>
 </main>
-<footer><a href="https://github.com/semyonfox/pagedrop">Source on GitHub</a> · MIT licensed · no accounts, dashboard, or uploaded server-side code.</footer>
+<footer><a href="https://github.com/semyonfox/seol">Source on GitHub</a> · MIT licensed · no accounts, dashboard, or uploaded server-side code.</footer>
 </body>
 </html>`))
 

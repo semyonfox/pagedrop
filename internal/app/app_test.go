@@ -26,7 +26,7 @@ func TestLandingPage(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 	body := recorder.Body.String()
-	for _, want := range []string{"Publish an HTML page", "pagedrop upload ./report", "10 MiB compressed", "one day by default", "https://pages.example.test", "$skill-installer"} {
+	for _, want := range []string{"Publish an HTML page", "seol publish ./report", "10 MiB compressed", "one day by default", "https://pages.example.test", "$skill-installer"} {
 		if !bytes.Contains([]byte(body), []byte(want)) {
 			t.Fatalf("landing page missing %q", want)
 		}
@@ -42,7 +42,7 @@ func TestTemporaryPublicDefaults(t *testing.T) {
 	if s.cfg.DefaultExpiry != 24*time.Hour || s.cfg.MaxExpiry != 7*24*time.Hour {
 		t.Fatalf("expiry defaults = %s / %s", s.cfg.DefaultExpiry, s.cfg.MaxExpiry)
 	}
-	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 500 || s.cfg.UploadsPerMinute != 5 {
+	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 100 || s.cfg.UploadsPerMinute != 5 {
 		t.Fatalf("upload defaults = %d / %d / %d / %d", s.cfg.MaxUpload, s.cfg.MaxExtracted, s.cfg.MaxFiles, s.cfg.UploadsPerMinute)
 	}
 }
@@ -86,6 +86,7 @@ func TestUploadRateLimitUsesTrustedCloudflareIP(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, web.URL+"/api/v1/pages", &body)
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		req.Header.Set("CF-Connecting-IP", ip)
+		req.Header.Set("Authorization", "Bearer admin-token")
 		resp, requestErr := http.DefaultClient.Do(req)
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -131,7 +132,7 @@ func TestUploadServeListDelete(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, _ := writer.CreateFormFile("file", "report.html")
-	_, _ = part.Write([]byte("<!doctype html><title>Hello</title><h1>PageDrop works</h1>"))
+	_, _ = part.Write([]byte("<!doctype html><title>Hello</title><h1>Seol works</h1>"))
 	_ = writer.Close()
 
 	req, _ := http.NewRequest(http.MethodPost, web.URL+"/api/v1/pages", &body)
@@ -174,7 +175,7 @@ func TestUploadServeListDelete(t *testing.T) {
 	resp.Body.Close()
 
 	resp, _ = http.Get(web.URL + "/p/" + created.ID + "/")
-	if resp.StatusCode != http.StatusNotFound {
+	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("deleted page status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
@@ -223,6 +224,9 @@ func TestZIPAssetsReplacementCachingAndExpiry(t *testing.T) {
 
 	archive := zipBytes(t, map[string]string{"index.html": "<link rel=stylesheet href=assets/site.css><h1>v1</h1>", "assets/site.css": "body{color:blue}"})
 	created := uploadTestFile(t, web.URL, "site.zip", archive, "1h")
+	if created.TTLSeconds != 3600 {
+		t.Fatalf("ttl = %d", created.TTLSeconds)
+	}
 	resp, err := http.Get(web.URL + "/p/" + created.ID + "/assets/site.css")
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +265,18 @@ func TestZIPAssetsReplacementCachingAndExpiry(t *testing.T) {
 		data, _ := io.ReadAll(resp.Body)
 		t.Fatalf("replace=%d %s", resp.StatusCode, data)
 	}
+	var replaced page
+	if err := json.NewDecoder(resp.Body).Decode(&replaced); err != nil {
+		t.Fatal(err)
+	}
 	resp.Body.Close()
+	if replaced.ExpiresAt == nil {
+		t.Fatal("replacement has no expiry")
+	}
+	expires, parseErr := time.Parse(time.RFC3339, *replaced.ExpiresAt)
+	if parseErr != nil || time.Until(expires) < 59*time.Minute {
+		t.Fatalf("replacement did not refresh expiry: %v", replaced.ExpiresAt)
+	}
 	resp, _ = http.Get(web.URL + "/p/" + created.ID + "/assets/site.css")
 	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -301,11 +316,14 @@ func TestExpiredPageReturnsGone(t *testing.T) {
 	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("content type = %q", resp.Header.Get("Content-Type"))
+	}
 	resp.Body.Close()
 }
 
 func TestRejectsExpiryBeyondPublicMaximum(t *testing.T) {
-	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://test", UploadToken: "admin-token"})
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://test", UploadToken: "test-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +368,7 @@ func rawUpload(t *testing.T, server, name string, data []byte, expires string) *
 	_ = writer.Close()
 	req, _ := http.NewRequest(http.MethodPost, server+"/api/v1/pages", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer test-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -386,9 +405,57 @@ func TestManagementRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestPublishingRequiresAuthentication(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://example.test", UploadToken: "secret", MaxUpload: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pages", nil)
+	recorder := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestExtractsAndUpdatesTitleAndExpiry(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://example.test", UploadToken: "test-token", DefaultExpiry: time.Hour, MaxExpiry: 7 * 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+	p := uploadTestFile(t, web.URL, "report.html", []byte("<!doctype html><title>  Useful &amp; Small  </title>"), "1h")
+	if p.Title != "Useful & Small" {
+		t.Fatalf("title = %q", p.Title)
+	}
+	payload := strings.NewReader(`{"expires_in":"3d"}`)
+	req, _ := http.NewRequest(http.MethodPatch, web.URL+"/api/v1/pages/"+p.ID, payload)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("patch=%d %s", resp.StatusCode, body)
+	}
+	var updated page
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.TTLSeconds != int64((3*24*time.Hour)/time.Second) {
+		t.Fatalf("ttl = %d", updated.TTLSeconds)
+	}
+}
+
 func TestConfigDefaultExpiryIsOneDay(t *testing.T) {
-	t.Setenv("PAGEDROP_TOKEN", strings.Repeat("a", 32))
-	t.Setenv("PAGEDROP_DEFAULT_EXPIRY", "")
+	t.Setenv("SEOL_TOKEN", strings.Repeat("a", 32))
+	t.Setenv("SEOL_DEFAULT_EXPIRY", "")
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatal(err)

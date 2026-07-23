@@ -7,7 +7,7 @@ feature rather than opening a public issue.
 
 ## Security model
 
-PageDrop treats every uploaded page as an untrusted JavaScript application.
+Seol treats every uploaded page as an untrusted JavaScript application.
 Anyone who possesses a public page URL can view it; unguessable URLs are not a
 substitute for authentication.
 

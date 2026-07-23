@@ -1,16 +1,16 @@
-# PageDrop operations handoff
+# Seol operations handoff
 
 ## Service
 
-- Public URL: <https://pagedrop.semyon.ie>
+- Public URL: <https://seol.semyon.ie>
 - Local origin: `http://127.0.0.1:8788`
-- Application container: `pagedrop`
-- Tunnel container: `pagedrop-tunnel`
-- Persistent Docker volume: `pagedrop-data`
+- Application container: `seol`
+- Tunnel container: `seol-tunnel`
+- Persistent Docker volume: `seol-data`
 - Restart policy: `unless-stopped`
 
-The application serves static uploads only. Publishing is anonymous.
-Management requests require `PAGEDROP_TOKEN`; the Cloudflare connector uses a
+The application serves static uploads only. Publishing and management requests
+require `SEOL_TOKEN`; the Cloudflare connector uses a
 separate tunnel token. Keep both out of the repository and command output.
 
 The checked-in `compose.yaml` is the preferred reproducible deployment. The
@@ -21,20 +21,20 @@ forwards to the local origin.
 
 ```bash
 curl --fail http://127.0.0.1:8788/health
-curl --fail https://pagedrop.semyon.ie/health
-docker ps --filter name=pagedrop
-docker logs --tail 100 pagedrop
-docker logs --tail 100 pagedrop-tunnel
+curl --fail https://seol.semyon.ie/health
+docker ps --filter name=seol
+docker logs --tail 100 seol
+docker logs --tail 100 seol-tunnel
 ```
 
-With the CLI configured and the admin token available:
+With the CLI configured and the API token available:
 
 ```bash
-pagedrop stats --server https://pagedrop.semyon.ie
-pagedrop list --server https://pagedrop.semyon.ie
+seol stats --server https://seol.semyon.ie
+seol list --server https://seol.semyon.ie
 ```
 
-`pagedrop stats --json` is suitable for scripts. It reports active, expired,
+`seol stats --json` is suitable for scripts. It reports active, expired,
 and deleted page counts, stored file and byte totals, and the nearest active
 expiry.
 
@@ -44,11 +44,11 @@ Before changing the live service:
 
 1. Run `make check`.
 2. Build a versioned image; do not replace the rollback image tag.
-3. Preserve `PAGEDROP_TOKEN`, `PAGEDROP_PUBLIC_BASE_URL`, expiry settings, and
-   the upload rate/proxy settings and `pagedrop-data:/data` mount.
+3. Preserve `SEOL_TOKEN`, `SEOL_PUBLIC_BASE_URL`, expiry settings, and
+   the upload rate/proxy settings and `seol-data:/data` mount.
 4. Start the replacement with host port `127.0.0.1:8788` mapped to container
    port `8080`.
-5. Verify local health, public health, and an authenticated `pagedrop stats`.
+5. Verify local health, public health, and an authenticated `seol stats`.
 6. Keep the previous stopped container until the new version has settled.
 
 For a clean installation, copy `.env.example` to `.env`, set both tokens and
@@ -60,21 +60,20 @@ docker compose --profile tunnel up --build -d
 
 ## Rollback
 
-The deployment made on 2026-07-23 retained these stopped containers:
+The Seol v2 migration retains the previous PageDrop application container under
+a dated rollback name and leaves the original `pagedrop-data` volume untouched.
+Use `docker ps -a` and `docker volume ls` to identify those rollback resources.
 
-- `pagedrop-landing-20260723`: landing-page release immediately before stats
-- `pagedrop-previous-20260723`: earlier application release
-
-To roll back, stop the current `pagedrop`, give it a unique diagnostic name,
-rename the selected stopped container to `pagedrop`, and start it. Confirm
-`/health` locally and publicly afterward. Do not delete `pagedrop-data`; all
+To roll back, stop the current `seol`, give it a unique diagnostic name,
+rename the selected stopped container to `seol`, and start it. Confirm
+`/health` locally and publicly afterward. Do not delete `seol-data`; all
 releases share it.
 
 ## Backup
 
-The `pagedrop-data` volume contains both the SQLite database and uploaded page
+The `seol-data` volume contains both the SQLite database and uploaded page
 files. Back up the complete volume consistently. The simplest safe procedure is
-to stop `pagedrop`, snapshot or copy the volume, and then restart it. The tunnel
+to stop `seol`, snapshot or copy the volume, and then restart it. The tunnel
 may remain running during this short maintenance window.
 
 ## CI and management scope
@@ -90,11 +89,11 @@ privileged UI to secure.
 
 ## Abuse control
 
-Anonymous publishing is protected by the application limits (10 MiB uploaded,
-50 MiB extracted, 500 archive entries, one-day default expiry, seven-day
-maximum) and a built-in upload rate limit. Production sets
-`PAGEDROP_UPLOADS_PER_MINUTE=5` and `PAGEDROP_TRUST_PROXY_HEADERS=true`, so
-PageDrop groups requests by Cloudflare's validated `CF-Connecting-IP` value.
+Authenticated publishing is protected by the application limits (10 MiB uploaded,
+50 MiB extracted, 100 archive entries, one-day default expiry, seven-day
+maximum), a two-upload concurrency cap, and a built-in upload rate limit. Production sets
+`SEOL_UPLOADS_PER_MINUTE=5` and `SEOL_TRUST_PROXY_HEADERS=true`, so
+Seol groups requests by Cloudflare's validated `CF-Connecting-IP` value.
 Enable trusted proxy headers only while the origin remains private behind the
 tunnel.
 
