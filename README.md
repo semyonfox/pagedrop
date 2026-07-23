@@ -75,6 +75,7 @@ pagedrop upload --quiet ./report-site
 
 # Manage pages
 pagedrop list
+pagedrop stats
 pagedrop info PAGE_ID
 pagedrop replace PAGE_ID ./updated-report
 pagedrop delete PAGE_ID
@@ -126,15 +127,32 @@ Uploaded pages are arbitrary untrusted JavaScript. Prefer a dedicated content
 hostname or registrable domain with no authentication cookies. PageDrop itself
 uses bearer headers and does not set cookies.
 
+### Live instance
+
+The personal instance is available at
+[pagedrop.semyon.ie](https://pagedrop.semyon.ie). It uses Cloudflare Tunnel,
+keeps page data in the `pagedrop-data` Docker volume, and requires the instance
+admin token only for management commands:
+
+```bash
+pagedrop configure --server https://pagedrop.semyon.ie
+pagedrop stats
+```
+
+Publishing remains anonymous. Do not commit the admin token or tunnel token.
+See [OPERATIONS.md](OPERATIONS.md) for the deployment handoff, health checks,
+upgrade procedure, and rollback notes.
+
 ## HTTP API
 
-Publishing is anonymous. Listing, inspecting, replacing, and deleting pages
-require `Authorization: Bearer TOKEN`.
+Publishing is anonymous. Statistics, listing, inspecting, replacing, and
+deleting pages require `Authorization: Bearer TOKEN`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/pages` | Create a page anonymously |
 | `GET` | `/api/v1/pages` | List pages |
+| `GET` | `/api/v1/stats` | Summarize stored pages and content |
 | `GET` | `/api/v1/pages/{id}` | Get metadata |
 | `PUT` | `/api/v1/pages/{id}/content` | Replace content atomically |
 | `DELETE` | `/api/v1/pages/{id}` | Delete a page idempotently |
@@ -205,7 +223,8 @@ make docker
 ```
 
 Tests cover authentication, HTML publication, ZIP assets, traversal rejection,
-expiry, cache validation, atomic replacement, deletion, and post-delete access.
+expiry, statistics, cache validation, atomic replacement, deletion, and
+post-delete access.
 
 ## Scope
 

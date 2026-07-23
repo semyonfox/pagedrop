@@ -81,6 +81,7 @@ pagedrop upload ./report
     <h2 id="commands">The commands</h2>
     <pre><code>pagedrop upload [--title TITLE] [--expires 7d] [--quiet|--json] PATH
 pagedrop list
+pagedrop stats
 pagedrop info PAGE_ID
 pagedrop replace PAGE_ID PATH
 pagedrop delete PAGE_ID</code></pre>

@@ -34,6 +34,7 @@ requested:
 
 ```bash
 pagedrop list
+pagedrop stats
 pagedrop info PAGE_ID
 pagedrop replace PAGE_ID PATH
 pagedrop delete PAGE_ID

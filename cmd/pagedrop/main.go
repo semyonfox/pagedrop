@@ -32,6 +32,9 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "list" {
 		return app.ListCLI(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "stats" {
+		return app.StatsCLI(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "info" {
 		return app.InfoCLI(os.Args[2:])
 	}
@@ -42,7 +45,7 @@ func run() error {
 		return app.DeleteCLI(os.Args[2:])
 	}
 	if len(os.Args) > 1 && os.Args[1] != "serve" {
-		return fmt.Errorf("usage: pagedrop [serve|configure|upload|list|info|replace|delete]")
+		return fmt.Errorf("usage: pagedrop [serve|configure|upload|list|stats|info|replace|delete]")
 	}
 
 	cfg, err := app.ConfigFromEnv()

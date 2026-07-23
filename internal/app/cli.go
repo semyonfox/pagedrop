@@ -238,6 +238,62 @@ func uploadPath(path string) (string, func(), error) {
 }
 
 func ListCLI(args []string) error { return metadataCommand("list", "", args) }
+func StatsCLI(args []string) error {
+	cfg := loadClientConfig()
+	flags := flag.NewFlagSet("stats", flag.ContinueOnError)
+	server := flags.String("server", cfg.Server, "server URL")
+	token := flags.String("token", cfg.Token, "token")
+	jsonOutput := flags.Bool("json", false, "JSON output")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: pagedrop stats [--json]")
+	}
+	if *token == "" {
+		return errors.New("PageDrop token is not configured")
+	}
+	body, err := clientRequest(http.MethodGet, strings.TrimRight(*server, "/")+"/api/v1/stats", *token)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		fmt.Println(string(body))
+		return nil
+	}
+	var result stats
+	if err := json.Unmarshal(body, &result); err != nil {
+		return err
+	}
+	fmt.Print(formatStats(result))
+	return nil
+}
+
+func formatStats(result stats) string {
+	nearest := "none"
+	if result.NearestExpiry != nil {
+		nearest = expiryDisplay(result.NearestExpiry)
+	}
+	return fmt.Sprintf("Active pages:   %d\nExpired pages:  %d\nDeleted pages:  %d\nStored content: %s across %d files\nNearest expiry: %s\n",
+		result.ActivePages, result.ExpiredPages, result.DeletedPages, formatBytes(result.StoredBytes), result.StoredFiles, nearest)
+}
+
+func formatBytes(value int64) string {
+	const unit = int64(1024)
+	if value < unit {
+		return fmt.Sprintf("%d B", value)
+	}
+	divisor, suffix := unit, "KiB"
+	for _, next := range []string{"MiB", "GiB", "TiB"} {
+		if value < divisor*unit {
+			break
+		}
+		divisor *= unit
+		suffix = next
+	}
+	return fmt.Sprintf("%.1f %s", float64(value)/float64(divisor), suffix)
+}
+
 func InfoCLI(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: pagedrop info PAGE_ID")

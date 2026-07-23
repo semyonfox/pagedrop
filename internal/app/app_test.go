@@ -113,6 +113,38 @@ func TestUploadServeListDelete(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestStats(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "https://pages.test", UploadToken: "test-token", MaxUpload: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+
+	_ = uploadTestFile(t, web.URL, "page.html", []byte("hello"), "1h")
+	req, _ := http.NewRequest(http.MethodGet, web.URL+"/api/v1/stats", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var result stats
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ActivePages != 1 || result.StoredBytes != 5 || result.StoredFiles != 1 || result.NearestExpiry == nil {
+		t.Fatalf("unexpected stats: %+v", result)
+	}
+	if got := formatStats(result); !strings.Contains(got, "Active pages:   1") || !strings.Contains(got, "Stored content: 5 B across 1 files") {
+		t.Fatalf("unexpected text stats: %q", got)
+	}
+}
+
 func TestZIPAssetsReplacementCachingAndExpiry(t *testing.T) {
 	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "https://pages.test", UploadToken: "test-token", MaxUpload: 1 << 20, MaxExtracted: 2 << 20, MaxFiles: 10, DefaultExpiry: time.Hour, MaxExpiry: 24 * time.Hour, CleanupInterval: time.Hour})
 	if err != nil {

@@ -13,6 +13,37 @@ import (
 	"time"
 )
 
+type stats struct {
+	ActivePages   int     `json:"active_pages"`
+	ExpiredPages  int     `json:"expired_pages"`
+	DeletedPages  int     `json:"deleted_pages"`
+	StoredBytes   int64   `json:"stored_bytes"`
+	StoredFiles   int     `json:"stored_files"`
+	NearestExpiry *string `json:"nearest_expiry"`
+}
+
+func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
+	var result stats
+	var nearest sql.NullString
+	err := s.db.QueryRowContext(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'active'),
+			COUNT(*) FILTER (WHERE status = 'expired'),
+			COUNT(*) FILTER (WHERE status = 'deleted'),
+			COALESCE(SUM(size_bytes) FILTER (WHERE status = 'active'), 0),
+			COALESCE(SUM(file_count) FILTER (WHERE status = 'active'), 0),
+			MIN(expires_at) FILTER (WHERE status = 'active' AND expires_at IS NOT NULL)
+		FROM pages`).Scan(&result.ActivePages, &result.ExpiredPages, &result.DeletedPages, &result.StoredBytes, &result.StoredFiles, &nearest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL", "Could not calculate statistics.")
+		return
+	}
+	if nearest.Valid {
+		result.NearestExpiry = &nearest.String
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) listPages(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if value, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && value > 0 && value <= 200 {

@@ -122,6 +122,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("POST /api/v1/pages", s.createPage)
 	mux.HandleFunc("GET /api/v1/pages", s.auth(s.listPages))
+	mux.HandleFunc("GET /api/v1/stats", s.auth(s.getStats))
 	mux.HandleFunc("GET /api/v1/pages/{id}", s.auth(s.getPage))
 	mux.HandleFunc("PUT /api/v1/pages/{id}/content", s.auth(s.replacePage))
 	mux.HandleFunc("DELETE /api/v1/pages/{id}", s.auth(s.deletePage))
