@@ -3,7 +3,6 @@ package app
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -13,6 +12,92 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLandingPage(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "https://pages.example.test", UploadToken: "test-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	recorder := httptest.NewRecorder()
+	s.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{"Publish an HTML page", "pagedrop upload ./report", "10 MiB compressed", "one day by default", "https://pages.example.test", "$skill-installer"} {
+		if !bytes.Contains([]byte(body), []byte(want)) {
+			t.Fatalf("landing page missing %q", want)
+		}
+	}
+}
+
+func TestTemporaryPublicDefaults(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "https://pages.example.test", UploadToken: "admin-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.cfg.DefaultExpiry != 24*time.Hour || s.cfg.MaxExpiry != 7*24*time.Hour {
+		t.Fatalf("expiry defaults = %s / %s", s.cfg.DefaultExpiry, s.cfg.MaxExpiry)
+	}
+	if s.cfg.MaxUpload != 10<<20 || s.cfg.MaxExtracted != 50<<20 || s.cfg.MaxFiles != 500 || s.cfg.UploadsPerMinute != 5 {
+		t.Fatalf("upload defaults = %d / %d / %d / %d", s.cfg.MaxUpload, s.cfg.MaxExtracted, s.cfg.MaxFiles, s.cfg.UploadsPerMinute)
+	}
+}
+
+func TestUploadRateLimitUsesTrustedCloudflareIP(t *testing.T) {
+	s, err := New(Config{
+		DataDir:           t.TempDir(),
+		PublicBaseURL:     "https://pages.test",
+		UploadToken:       "admin-token",
+		MaxUpload:         1 << 20,
+		UploadsPerMinute:  2,
+		TrustProxyHeaders: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+
+	upload := func(ip string) *http.Response {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, _ := writer.CreateFormFile("file", "page.html")
+		_, _ = part.Write([]byte("<h1>hello</h1>"))
+		_ = writer.Close()
+		req, _ := http.NewRequest(http.MethodPost, web.URL+"/api/v1/pages", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("CF-Connecting-IP", ip)
+		resp, requestErr := http.DefaultClient.Do(req)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return resp
+	}
+
+	for i := 0; i < 2; i++ {
+		resp := upload("203.0.113.10")
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("upload %d status = %d", i+1, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	resp := upload("203.0.113.10")
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("limited status=%d headers=%v", resp.StatusCode, resp.Header)
+	}
+	resp.Body.Close()
+
+	resp = upload("203.0.113.11")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("other client status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
 
 func TestUploadServeListDelete(t *testing.T) {
 	s, err := New(Config{
@@ -79,6 +164,38 @@ func TestUploadServeListDelete(t *testing.T) {
 		t.Fatalf("deleted page status = %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestStats(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "https://pages.test", UploadToken: "test-token", MaxUpload: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+
+	_ = uploadTestFile(t, web.URL, "page.html", []byte("hello"), "1h")
+	req, _ := http.NewRequest(http.MethodGet, web.URL+"/api/v1/stats", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var result stats
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ActivePages != 1 || result.StoredBytes != 5 || result.StoredFiles != 1 || result.NearestExpiry == nil {
+		t.Fatalf("unexpected stats: %+v", result)
+	}
+	if got := formatStats(result); !strings.Contains(got, "Active pages:   1") || !strings.Contains(got, "Stored content: 5 B across 1 files") {
+		t.Fatalf("unexpected text stats: %q", got)
+	}
 }
 
 func TestZIPAssetsReplacementCachingAndExpiry(t *testing.T) {
@@ -173,6 +290,23 @@ func TestExpiredPageReturnsGone(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestRejectsExpiryBeyondPublicMaximum(t *testing.T) {
+	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://test", UploadToken: "admin-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	web := httptest.NewServer(s.httpServer.Handler)
+	defer web.Close()
+	for _, expiry := range []string{"8d", "never"} {
+		resp := rawUpload(t, web.URL, "page.html", []byte("hello"), expiry)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expiry %q status=%d", expiry, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}
+
 func zipBytes(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var body bytes.Buffer
@@ -201,7 +335,6 @@ func rawUpload(t *testing.T, server, name string, data []byte, expires string) *
 	}
 	_ = writer.Close()
 	req, _ := http.NewRequest(http.MethodPost, server+"/api/v1/pages", &body)
-	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -225,13 +358,13 @@ func uploadTestFile(t *testing.T, server, name string, data []byte, expires stri
 	return p
 }
 
-func TestUploadRequiresAuthentication(t *testing.T) {
+func TestManagementRequiresAuthentication(t *testing.T) {
 	s, err := New(Config{DataDir: t.TempDir(), PublicBaseURL: "http://example.test", UploadToken: "secret", MaxUpload: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pages", nil).WithContext(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pages", nil)
 	recorder := httptest.NewRecorder()
 	s.httpServer.Handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusUnauthorized {

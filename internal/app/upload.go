@@ -178,8 +178,12 @@ func copyLimited(path string, source io.Reader, limit int64) (int64, error) {
 
 func (s *Server) extractZIP(archive *zip.ReadCloser, destination string) (int64, int, error) {
 	var total int64
-	count := 0
+	files, entries := 0, 0
 	for _, entry := range archive.File {
+		entries++
+		if entries > s.cfg.MaxFiles {
+			return 0, 0, uploadError{413, "TOO_MANY_FILES", "Archive contains too many entries."}
+		}
 		name := filepath.ToSlash(entry.Name)
 		if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, "\\") || filepath.IsAbs(name) {
 			return 0, 0, uploadError{400, "UNSAFE_ARCHIVE", "Archive contains an unsafe path."}
@@ -201,10 +205,7 @@ func (s *Server) extractZIP(archive *zip.ReadCloser, destination string) (int64,
 			}
 			continue
 		}
-		count++
-		if count > s.cfg.MaxFiles {
-			return 0, 0, uploadError{413, "TOO_MANY_FILES", "Archive contains too many files."}
-		}
+		files++
 		if entry.UncompressedSize64 > uint64(s.cfg.MaxExtracted) || total+int64(entry.UncompressedSize64) > s.cfg.MaxExtracted {
 			return 0, 0, uploadError{413, "EXTRACTED_TOO_LARGE", "Extracted content exceeds the configured limit."}
 		}
@@ -222,7 +223,7 @@ func (s *Server) extractZIP(archive *zip.ReadCloser, destination string) (int64,
 		}
 		total += size
 	}
-	return total, count, nil
+	return total, files, nil
 }
 
 func (s *Server) expiryFromForm(value string) (*time.Time, error) {
@@ -230,11 +231,14 @@ func (s *Server) expiryFromForm(value string) (*time.Time, error) {
 		value = formatExpiry(s.cfg.DefaultExpiry)
 	}
 	if strings.EqualFold(value, "never") {
+		if s.cfg.MaxExpiry > 0 {
+			return nil, fmt.Errorf("expiry must not exceed %s", formatExpiry(s.cfg.MaxExpiry))
+		}
 		return nil, nil
 	}
 	duration, err := parseExpiry(value)
 	if err != nil || duration <= 0 {
-		return nil, fmt.Errorf("use an expiry such as 1h, 7d, 30d, or never")
+		return nil, fmt.Errorf("use an expiry such as 1h, 1d, or 7d")
 	}
 	if s.cfg.MaxExpiry > 0 && duration > s.cfg.MaxExpiry {
 		return nil, fmt.Errorf("expiry exceeds maximum of %s", formatExpiry(s.cfg.MaxExpiry))

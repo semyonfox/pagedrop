@@ -8,7 +8,7 @@ file, ZIP archive, or local directory and returns a cryptographically random
 public link.
 
 ```console
-$ pagedrop upload --expires 7d ./report
+$ pagedrop upload ./report
 Published: https://pages.example.com/p/4WcJXG7i0Jo8F2K_48VcmQ/
 ID: 4WcJXG7i0Jo8F2K_48VcmQ
 Expires: 2026-07-29T20:00:00Z
@@ -17,16 +17,39 @@ Expires: 2026-07-29T20:00:00Z
 PageDrop deliberately runs no uploaded server-side code. HTML, CSS, JavaScript,
 images, fonts, JSON, SVG, WASM, and other static assets are served as files.
 
+## Why PageDrop exists
+
+AI agents are increasingly good at turning work into useful little HTML
+artifacts: a benchmark report, a chart of service statistics, a comparison
+dashboard, a diagram, a set of generated documentation, or a one-off demo.
+Generating the page is easy. Handing it to someone else is often the awkward
+part.
+
+Without a publishing step, the result is commonly trapped in a temporary
+directory, attached as a file, or served by a local process that disappears as
+soon as the agent finishes. PageDrop gives the agent one deliberately small
+last step: upload the static artifact and return a normal URL. The page remains
+available independently of the agent process, is easy to open on any device,
+and can be shared with a friend or collaborator without deploying an
+application.
+
+PageDrop is intentionally temporary rather than archival. Links expire after a
+day by default, uploads are tightly bounded and rate-limited, and uploaded code
+never runs on the server. It is a quick handoff layer for generated artifacts,
+not a replacement for source control, permanent hosting, or a general-purpose
+file store.
+
 ## Features
 
 - One lightweight Go binary for both server and CLI
 - Standalone HTML, ZIP, and automatic directory uploads
 - 128-bit URL-safe random page identifiers
-- Bearer-token protected management API
+- Anonymous publishing with a bearer-token protected management API
 - SQLite metadata and filesystem content storage
 - Configurable expiry with automatic cleanup
 - Atomic page replacement without changing the URL
 - Safe ZIP extraction and compressed/extracted/file-count limits
+- Per-source upload rate limiting with trusted-proxy support
 - ETags and cache revalidation without stale replacements
 - Structured JSON API and deterministic CLI output modes
 - Non-root, capability-free Docker deployment
@@ -52,9 +75,7 @@ Build and configure the CLI:
 
 ```bash
 go build -o pagedrop ./cmd/pagedrop
-./pagedrop configure \
-  --server http://127.0.0.1:8788 \
-  --token YOUR_GENERATED_TOKEN
+./pagedrop configure --server http://127.0.0.1:8788
 ```
 
 The configuration is stored with mode `0600` at
@@ -77,6 +98,7 @@ pagedrop upload --quiet ./report-site
 
 # Manage pages
 pagedrop list
+pagedrop stats
 pagedrop info PAGE_ID
 pagedrop replace PAGE_ID ./updated-report
 pagedrop delete PAGE_ID
@@ -87,8 +109,8 @@ relative asset URLs such as `assets/chart.js`; root-relative URLs such as
 `/assets/chart.js` refer to the PageDrop host root and will not work beneath a
 page URL.
 
-Pages expire after one day by default. Supported overrides include `1h`, `7d`,
-`30d`, and `never`.
+Pages expire after one day by default. Supported expiration values include
+`1h`, `1d`, and `7d`; seven days is the maximum.
 
 ## AI-agent instruction
 
@@ -96,7 +118,7 @@ Pages expire after one day by default. Supported overrides include `1h`, `7d`,
 Create a static website in a temporary directory with index.html at its root.
 Publish it by running:
 
-    pagedrop upload --expires 7d --quiet DIRECTORY
+    pagedrop upload --quiet DIRECTORY
 
 Return the printed URL to the user. Never place credentials or private data in
 the generated page.
@@ -128,14 +150,36 @@ Uploaded pages are arbitrary untrusted JavaScript. Prefer a dedicated content
 hostname or registrable domain with no authentication cookies. PageDrop itself
 uses bearer headers and does not set cookies.
 
+### Live instance
+
+The personal instance is available at
+[pagedrop.semyon.ie](https://pagedrop.semyon.ie). It uses Cloudflare Tunnel,
+keeps page data in the `pagedrop-data` Docker volume, and requires the instance
+admin token only for management commands:
+
+```bash
+pagedrop configure --server https://pagedrop.semyon.ie
+pagedrop stats
+```
+
+Publishing remains anonymous. Do not commit the admin token or tunnel token.
+See [OPERATIONS.md](OPERATIONS.md) for the deployment handoff, health checks,
+upgrade procedure, and rollback notes.
+
+The public instance accepts at most five uploads per minute from each source IP.
+That limit is enforced by PageDrop even when an equivalent Cloudflare rule is
+not available on the zone's plan.
+
 ## HTTP API
 
-All management routes require `Authorization: Bearer TOKEN`.
+Publishing is anonymous. Statistics, listing, inspecting, replacing, and
+deleting pages require `Authorization: Bearer TOKEN`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/pages` | Create a page |
+| `POST` | `/api/v1/pages` | Create a page anonymously |
 | `GET` | `/api/v1/pages` | List pages |
+| `GET` | `/api/v1/stats` | Summarize stored pages and content |
 | `GET` | `/api/v1/pages/{id}` | Get metadata |
 | `PUT` | `/api/v1/pages/{id}/content` | Replace content atomically |
 | `DELETE` | `/api/v1/pages/{id}` | Delete a page idempotently |
@@ -146,8 +190,7 @@ Uploads use `multipart/form-data` with `file` plus optional `title` and
 `expires_in` fields.
 
 ```bash
-curl -H "Authorization: Bearer $PAGEDROP_TOKEN" \
-  -F "file=@site.zip" \
+curl -F "file=@site.zip" \
   -F "title=Network benchmark" \
   -F "expires_in=7d" \
   http://127.0.0.1:8788/api/v1/pages
@@ -192,10 +235,12 @@ data.
 | `PAGEDROP_DATA_DIR` | `./data` |
 | `PAGEDROP_PUBLIC_BASE_URL` | `http://localhost:8080` |
 | `PAGEDROP_DEFAULT_EXPIRY` | `1d` |
-| `PAGEDROP_MAX_EXPIRY` | `365d` |
-| `PAGEDROP_MAX_UPLOAD_BYTES` | `26214400` (25 MiB) |
-| `PAGEDROP_MAX_EXTRACTED_BYTES` | `104857600` (100 MiB) |
-| `PAGEDROP_MAX_FILES` | `1000` |
+| `PAGEDROP_MAX_EXPIRY` | `7d` |
+| `PAGEDROP_MAX_UPLOAD_BYTES` | `10485760` (10 MiB) |
+| `PAGEDROP_MAX_EXTRACTED_BYTES` | `52428800` (50 MiB) |
+| `PAGEDROP_MAX_FILES` | `500` archive entries |
+| `PAGEDROP_UPLOADS_PER_MINUTE` | `5` |
+| `PAGEDROP_TRUST_PROXY_HEADERS` | `false`; enable only behind a trusted proxy |
 
 ## Development
 
@@ -207,14 +252,16 @@ make docker
 ```
 
 Tests cover authentication, HTML publication, ZIP assets, traversal rejection,
-expiry, cache validation, atomic replacement, deletion, and post-delete access.
+expiry, statistics, cache validation, atomic replacement, deletion, and
+post-delete access.
 
 ## Scope
 
-PageDrop v1 is intentionally single-owner. It does not provide registration,
-teams, billing, server-side runtimes, passwords for individual pages, analytics,
-or object storage. SQLite plus local files is the simplest reliable deployment;
-PostgreSQL and R2/S3 become useful only when running multiple server replicas.
+PageDrop v1 is intentionally single-operator, even when publishing is open to a
+wider audience. It does not provide registration, teams, billing, server-side
+runtimes, passwords for individual pages, analytics, or object storage. SQLite
+plus local files is the simplest reliable deployment; PostgreSQL and R2/S3
+become useful only when running multiple server replicas.
 
 ## License
 
