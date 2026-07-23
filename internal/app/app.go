@@ -41,16 +41,16 @@ func ConfigFromEnv() (Config, error) {
 		DataDir:         env("PAGEDROP_DATA_DIR", "./data"),
 		PublicBaseURL:   strings.TrimRight(env("PAGEDROP_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 		UploadToken:     os.Getenv("PAGEDROP_TOKEN"),
-		MaxUpload:       envInt64("PAGEDROP_MAX_UPLOAD_BYTES", 25<<20),
-		MaxExtracted:    envInt64("PAGEDROP_MAX_EXTRACTED_BYTES", 100<<20),
-		MaxFiles:        int(envInt64("PAGEDROP_MAX_FILES", 1000)),
+		MaxUpload:       envInt64("PAGEDROP_MAX_UPLOAD_BYTES", 10<<20),
+		MaxExtracted:    envInt64("PAGEDROP_MAX_EXTRACTED_BYTES", 50<<20),
+		MaxFiles:        int(envInt64("PAGEDROP_MAX_FILES", 500)),
 		CleanupInterval: time.Minute,
 	}
 	var err error
 	if c.DefaultExpiry, err = parseExpiry(env("PAGEDROP_DEFAULT_EXPIRY", "1d")); err != nil {
 		return Config{}, fmt.Errorf("PAGEDROP_DEFAULT_EXPIRY: %w", err)
 	}
-	if c.MaxExpiry, err = parseExpiry(env("PAGEDROP_MAX_EXPIRY", "365d")); err != nil {
+	if c.MaxExpiry, err = parseExpiry(env("PAGEDROP_MAX_EXPIRY", "7d")); err != nil {
 		return Config{}, fmt.Errorf("PAGEDROP_MAX_EXPIRY: %w", err)
 	}
 	if c.UploadToken == "" {
@@ -92,19 +92,19 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	if cfg.MaxUpload == 0 {
-		cfg.MaxUpload = 25 << 20
+		cfg.MaxUpload = 10 << 20
 	}
 	if cfg.MaxExtracted == 0 {
-		cfg.MaxExtracted = 100 << 20
+		cfg.MaxExtracted = 50 << 20
 	}
 	if cfg.MaxFiles == 0 {
-		cfg.MaxFiles = 1000
+		cfg.MaxFiles = 500
 	}
 	if cfg.DefaultExpiry == 0 {
 		cfg.DefaultExpiry = 24 * time.Hour
 	}
 	if cfg.MaxExpiry == 0 {
-		cfg.MaxExpiry = 365 * 24 * time.Hour
+		cfg.MaxExpiry = 7 * 24 * time.Hour
 	}
 	if cfg.CleanupInterval == 0 {
 		cfg.CleanupInterval = time.Minute
@@ -118,8 +118,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, db: db}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.landingPage)
 	mux.HandleFunc("GET /health", s.health)
-	mux.HandleFunc("POST /api/v1/pages", s.auth(s.createPage))
+	mux.HandleFunc("POST /api/v1/pages", s.createPage)
 	mux.HandleFunc("GET /api/v1/pages", s.auth(s.listPages))
 	mux.HandleFunc("GET /api/v1/pages/{id}", s.auth(s.getPage))
 	mux.HandleFunc("PUT /api/v1/pages/{id}/content", s.auth(s.replacePage))

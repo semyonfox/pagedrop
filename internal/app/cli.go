@@ -26,8 +26,8 @@ func ConfigureCLI(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *server == "" || *token == "" {
-		return errors.New("usage: pagedrop configure --server URL --token TOKEN")
+	if *server == "" {
+		return errors.New("usage: pagedrop configure --server URL [--token ADMIN_TOKEN]")
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -37,7 +37,10 @@ func ConfigureCLI(args []string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	content := fmt.Sprintf("server = %s\ntoken = %s\n", strconv.Quote(strings.TrimRight(*server, "/")), strconv.Quote(*token))
+	content := fmt.Sprintf("server = %s\n", strconv.Quote(strings.TrimRight(*server, "/")))
+	if *token != "" {
+		content += fmt.Sprintf("token = %s\n", strconv.Quote(*token))
+	}
 	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return err
@@ -100,8 +103,11 @@ func uploadCommand(method, id string, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 || *token == "" {
-		return errors.New("provide one HTML file, ZIP archive, or directory and a configured token")
+	if flags.NArg() != 1 {
+		return errors.New("provide one HTML file, ZIP archive, or directory")
+	}
+	if method != http.MethodPost && *token == "" {
+		return errors.New("an admin token is required to replace a page")
 	}
 	path, cleanup, err := uploadPath(flags.Arg(0))
 	if err != nil {
@@ -140,7 +146,9 @@ func uploadCommand(method, id string, args []string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+*token)
+	if *token != "" {
+		req.Header.Set("Authorization", "Bearer "+*token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err

@@ -8,7 +8,7 @@ file, ZIP archive, or local directory and returns a cryptographically random
 public link.
 
 ```console
-$ pagedrop upload --expires 7d ./report
+$ pagedrop upload ./report
 Published: https://pages.example.com/p/4WcJXG7i0Jo8F2K_48VcmQ/
 ID: 4WcJXG7i0Jo8F2K_48VcmQ
 Expires: 2026-07-29T20:00:00Z
@@ -22,7 +22,7 @@ images, fonts, JSON, SVG, WASM, and other static assets are served as files.
 - One lightweight Go binary for both server and CLI
 - Standalone HTML, ZIP, and automatic directory uploads
 - 128-bit URL-safe random page identifiers
-- Bearer-token protected management API
+- Anonymous publishing with a bearer-token protected management API
 - SQLite metadata and filesystem content storage
 - Configurable expiry with automatic cleanup
 - Atomic page replacement without changing the URL
@@ -52,9 +52,7 @@ Build and configure the CLI:
 
 ```bash
 go build -o pagedrop ./cmd/pagedrop
-./pagedrop configure \
-  --server http://127.0.0.1:8788 \
-  --token YOUR_GENERATED_TOKEN
+./pagedrop configure --server http://127.0.0.1:8788
 ```
 
 The configuration is stored with mode `0600` at
@@ -87,8 +85,8 @@ relative asset URLs such as `assets/chart.js`; root-relative URLs such as
 `/assets/chart.js` refer to the PageDrop host root and will not work beneath a
 page URL.
 
-Pages expire after one day by default. Supported overrides include `1h`, `7d`,
-`30d`, and `never`.
+Pages expire after one day by default. Supported expiration values include
+`1h`, `1d`, and `7d`; seven days is the maximum.
 
 ## AI-agent instruction
 
@@ -96,7 +94,7 @@ Pages expire after one day by default. Supported overrides include `1h`, `7d`,
 Create a static website in a temporary directory with index.html at its root.
 Publish it by running:
 
-    pagedrop upload --expires 7d --quiet DIRECTORY
+    pagedrop upload --quiet DIRECTORY
 
 Return the printed URL to the user. Never place credentials or private data in
 the generated page.
@@ -130,11 +128,12 @@ uses bearer headers and does not set cookies.
 
 ## HTTP API
 
-All management routes require `Authorization: Bearer TOKEN`.
+Publishing is anonymous. Listing, inspecting, replacing, and deleting pages
+require `Authorization: Bearer TOKEN`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/v1/pages` | Create a page |
+| `POST` | `/api/v1/pages` | Create a page anonymously |
 | `GET` | `/api/v1/pages` | List pages |
 | `GET` | `/api/v1/pages/{id}` | Get metadata |
 | `PUT` | `/api/v1/pages/{id}/content` | Replace content atomically |
@@ -146,8 +145,7 @@ Uploads use `multipart/form-data` with `file` plus optional `title` and
 `expires_in` fields.
 
 ```bash
-curl -H "Authorization: Bearer $PAGEDROP_TOKEN" \
-  -F "file=@site.zip" \
+curl -F "file=@site.zip" \
   -F "title=Network benchmark" \
   -F "expires_in=7d" \
   http://127.0.0.1:8788/api/v1/pages
@@ -192,10 +190,10 @@ data.
 | `PAGEDROP_DATA_DIR` | `./data` |
 | `PAGEDROP_PUBLIC_BASE_URL` | `http://localhost:8080` |
 | `PAGEDROP_DEFAULT_EXPIRY` | `1d` |
-| `PAGEDROP_MAX_EXPIRY` | `365d` |
-| `PAGEDROP_MAX_UPLOAD_BYTES` | `26214400` (25 MiB) |
-| `PAGEDROP_MAX_EXTRACTED_BYTES` | `104857600` (100 MiB) |
-| `PAGEDROP_MAX_FILES` | `1000` |
+| `PAGEDROP_MAX_EXPIRY` | `7d` |
+| `PAGEDROP_MAX_UPLOAD_BYTES` | `10485760` (10 MiB) |
+| `PAGEDROP_MAX_EXTRACTED_BYTES` | `52428800` (50 MiB) |
+| `PAGEDROP_MAX_FILES` | `500` archive entries |
 
 ## Development
 
